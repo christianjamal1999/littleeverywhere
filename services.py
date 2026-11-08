@@ -1,8 +1,8 @@
 """Clients for Claude (songwriting + storyboards), Higgsfield (images + video),
 ElevenLabs (music) and ffmpeg (slicing + final render)."""
 import base64
-import difflib
 import json
+import math
 import os
 import re
 import subprocess
@@ -297,6 +297,33 @@ def character_line(c):
     return f"{c['name']} ({who}age {c.get('age') or '?'}): {c.get('look', '')}; wearing {c.get('outfit', '')}"
 
 
+def hair_of(c):
+    """The sentences of a character's description about their hair, which video models drift on most."""
+    text = f"{c.get('face', '')} {c.get('look', '')}"
+    found = [x.strip() for x in re.split(r"(?<=[.;])\s+", text) if re.search(r"\bhair|braid|bang|fringe|curl|ponytail|bun\b", x, re.I)]
+    return " ".join(dict.fromkeys(found))
+
+
+def head_count(cast):
+    """Exactly who is in the shot. Video models invent extra people to fill space or match extra voices."""
+    if not cast:
+        return "There are no people in this shot."
+    names = " and ".join(c["name"] for c in cast)
+    n = len(cast)
+    return (f"Exactly {n} {'person' if n == 1 else 'people'} in the whole shot: {names}. Nobody else is in it, nobody "
+            f"enters the frame, and no one appears in the background, in mirrors, doorways or windows.")
+
+
+def without_absent(text, cast, everyone):
+    """Drop sentences that name cast members who aren't in this shot, so models don't add them."""
+    absent = [c["name"] for c in everyone if c["id"] not in {x["id"] for x in cast}]
+    if not absent or not text:
+        return text
+    pattern = re.compile(r"\b(" + "|".join(re.escape(n) for n in absent) + r")\b", re.I)
+    parts = re.split(r"(?<=[.;!?])\s+", text)
+    return " ".join(x for x in parts if not pattern.search(x))
+
+
 def identity_lock(cast):
     """The per-character facial facts that must match in every image."""
     lines = [f"{c['name']}: {c.get('face') or c.get('look', '')}; wearing {c.get('outfit', '')}" for c in cast]
@@ -304,7 +331,8 @@ def identity_lock(cast):
         return ""
     return ("IDENTITY LOCK, the most important instruction: each person must be unmistakably the same real person as "
             "in their reference images, pixel-faithful in eye color and shape, eyebrows, nose, ears, lips, teeth, "
-            "skin tone, freckles, hair and outfit. Do not beautify, age or restyle them.\n" + "\n".join(lines) + "\n")
+            "skin tone, freckles, hair and outfit. Do not beautify, age or restyle them.\n" + "\n".join(lines) + "\n"
+            + head_count(cast) + "\n")
 
 
 def character_bible(c):
@@ -814,12 +842,12 @@ def character_prompt(settings, c, shot="headshot", photos=0):
             "daylight, plain softly blurred background, tack-sharp focus on the face. No text.")
 
 
-def _direction_text(scene, look):
+def _direction_text(scene, look, cast=(), everyone=()):
     """The creative director's breakdown of this shot, for the keyframe."""
     d = scene["direction"]
-    parts = [f"FIRST FRAME: {d['keyframe']}",
+    parts = [f"FIRST FRAME: {without_absent(d['keyframe'], cast, everyone)}",
              f"Shot: {d['shot_size']}, {d['angle']}, {d['lens']}.",
-             f"Blocking: {d['blocking']}", f"Lighting: {d['lighting']}"]
+             f"Blocking: {without_absent(d['blocking'], cast, everyone)}", f"Lighting: {d['lighting']}"]
     if look:
         parts.append(f"Look: {look['style']} Palette: {look['palette']} Wardrobe: {look['wardrobe']}")
     if d.get("continuity"):
@@ -827,7 +855,7 @@ def _direction_text(scene, look):
     return " ".join(parts) + " "
 
 
-def scene_image_prompt(settings, scene, cast, look=None, location=None):
+def scene_image_prompt(settings, scene, cast, look=None, location=None, everyone=()):
     """The keyframe's prompt and references. With the creative director's notes, the shot follows them,
     and the location's set photo (if it has one) is the last reference so every shot there matches it."""
     plate = (location or {}).get("image")
@@ -840,7 +868,7 @@ def scene_image_prompt(settings, scene, cast, look=None, location=None):
     framing = ("Medium close-up with the singers' faces large and sharp, facing the camera, mouths clearly visible"
                if scene.get("singers") else "Cinematic shot with every face clearly visible and in focus")
     if scene.get("direction"):
-        shot = _direction_text(scene, look)
+        shot = _direction_text(scene, look, cast, everyone)
         if location:
             shot += f"SET: {location['name']}: {location['description']} "
     else:
@@ -888,12 +916,13 @@ def intro_clip_job(settings, canvas_url):
 
 KEEP_IDENTITY = ("Animate exactly what is in this image. Every person stays the same person with the same eyes, "
                  "eyebrows, nose, ears, teeth, hair and outfit, and every animal stays the same animal from the first "
-                 "frame to the last: nothing morphs or transforms, and no new characters appear. Stay in this same "
+                 "frame to the last: nothing morphs or transforms, and no new people or characters appear. Stay in this same "
                  "shot with no cuts; the camera makes only the one smooth move described, never a big zoom.")
 LIVELY = ("Live-action footage at real-time speed, never slow motion. The children have the quick, slightly messy "
           "energy of real kids: fast head bobs and shoulder bounces, knees bending, weight shifting, arms swinging, "
           "natural blinking, eyes darting and changing expressions.")
-ANTI_MORPH = ("morphing, transforming, changing faces, new characters, scene cuts, fast camera moves, slow motion, stiff "
+ANTI_MORPH = ("morphing, transforming, changing faces, changing hair, extra people, a new child entering, new characters, "
+              "scene cuts, fast camera moves, motion blur, slow motion, stiff "
               "bodies, frozen faces, mannequin, floating, text, watermark, distorted faces, extra teeth, extra limbs, scary")
 
 
@@ -909,17 +938,21 @@ def _sung_direction(scene, cast):
             f'"{words}". Anyone else keeps their mouth closed or smiling.')
 
 
-def _shot_motion(scene):
+def _shot_motion(scene, cast=(), everyone=()):
     """What happens in the shot: the creative director's beats and the choreography when there are some,
-    otherwise the storyboard's action and camera."""
+    otherwise the storyboard's action and camera. Cast members who aren't in the shot are never mentioned."""
     d, ch = scene.get("direction"), scene.get("choreo")
+    if d:
+        d = {**d, **{k: without_absent(d[k], cast, everyone) for k in ("beats", "blocking")}}
+    if ch:
+        ch = {**ch, **{k: without_absent(ch[k], cast, everyone) for k in ("counts", "formation")}}
     if not d:
         dance = f" Choreography by the count: {ch['counts']}" if ch else ""
         return f"{scene['action']}.{dance} Camera: {scene['camera']}."
     text = (f"Beat by beat: {d['beats']} Camera: {d['camera_move']} ({d['shot_size']}, {d['angle']}). "
-            f"Blocking: {d['blocking']}.")
+            f"Blocking: {d['blocking'].rstrip('. ')}.")
     if ch:
-        text += f" Choreography by the count: {ch['counts']} Formation: {ch['formation']}."
+        text += f" Choreography by the count: {ch['counts'].rstrip('. ')}. Formation: {ch['formation'].rstrip('. ')}."
     return text
 
 
@@ -928,18 +961,35 @@ def _clip_length(dur, choices):
     return next((c for c in choices if dur <= c + 0.5), choices[-1])
 
 
-def video_job(settings, scene, cast, audio_url=None, bpm=None):
-    dur = max(1.0, scene["end"] - scene["start"])
+VIDEO_MODES = ("seedance_ref", "kling_i2v", "wan_i2v", "ltx_fast")
+
+
+def video_mode(settings):
     mode = settings.get("video_mode")
-    if mode == "lipsync":  # the model that can hear the song for sung scenes, the cheaper one for the rest
-        mode = "wan_i2v" if audio_url else "kling_i2v"
+    return mode if mode in VIDEO_MODES else "seedance_ref"  # the old "lipsync" mix is retired
+
+
+def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
+    hair = " ".join(f"{c['name']}'s hair stays exactly like this in every frame: {hair_of(c)}"
+                    for c in cast if hair_of(c))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""
-    motion = f"{KEEP_IDENTITY} {LIVELY} {tempo}{_shot_motion(scene)} {habits} {_sung_direction(scene, cast)} No text or subtitles."
+    motion = (f"{KEEP_IDENTITY} {head_count(cast)} {hair} {LIVELY} {tempo}{_shot_motion(scene, cast, everyone)} "
+              f"{habits} {_sung_direction(scene, cast)} Smooth, steady camera; every face sharp and in focus. "
+              "No text or subtitles.")
     if len(cast) >= 3:
         # Video models mix up characters that cross paths, so a group stays put.
         motion += (" Everyone dances on their own spot and stays in the same left-to-right order: "
                    "nobody walks, rolls or crosses in front of anyone else.")
+    if note:
+        motion += f" Fix from the last attempt: {note}"
+    return motion
+
+
+def video_job(settings, scene, cast, audio_url=None, bpm=None, everyone=(), note=""):
+    dur = max(1.0, scene["end"] - scene["start"])
+    mode = video_mode(settings)
+    motion = video_prompt(scene, cast, everyone, bpm, note)
     resolution = settings.get("video_resolution") or "1080p"
     if mode == "kling_i2v":
         return hf_submit(settings, settings["kling_endpoint"], {
@@ -953,27 +1003,35 @@ def video_job(settings, scene, cast, audio_url=None, bpm=None):
             "aspect_ratio": settings.get("aspect_ratio") or "16:9", "generate_audio": False,
         })
     if mode == "wan_i2v":
-        # Wan can follow the song.
         body = {"prompt": motion, "image_url": public_url(settings, scene["image"]),
                 "duration": _clip_length(dur, (5, 10, 15)), "resolution": resolution}
         if audio_url:
             body["audio_url"] = audio_url
-            body["prompt"] += " The characters sing and dance in sync with the audio."
+            body["prompt"] += " Only the singers named above sing, in sync with the audio."
         return hf_submit(settings, settings["wan_endpoint"], body)
-    refs, _ = cast_refs(settings, cast, per_character=1, max_refs=MAX_SEPARATE_REFS - 1)
+    # Seedance 2.0: the keyframe opens the shot, each character's face reference keeps them on-model, and
+    # the scene's exact slice of the song drives the lip-sync and the dancing.
+    refs, legend = cast_refs(settings, cast, per_character=1, max_refs=MAX_SEPARATE_REFS - 1)
+    legend = "; ".join(re.sub(r"reference image (\d+)", lambda m: f"reference image {int(m.group(1)) + 1}", x)
+                       for x in legend)
     body = {
-        # Image 1 is the keyframe; the character references follow it.
-        "prompt": f"Use reference image 1 as the opening frame. {motion}",
+        "prompt": (f"Use reference image 1 as the opening frame. {('References: ' + legend + '. ') if legend else ''}"
+                   + motion + (" Only the singers named above sing, in sync with the reference audio."
+                               if audio_url else "")),
         "image_urls": [public_url(settings, u) for u in ([scene["image"]] + refs)[:9]],
-        "duration": int(min(15, max(4, round(dur)))),
+        "duration": int(min(15, max(4, math.ceil(dur)))),  # never shorter than the scene
         "resolution": resolution,
         "aspect_ratio": settings.get("aspect_ratio") or "16:9",
         "generate_audio": bool(audio_url),
     }
     if audio_url:
         body["audio_urls"] = [audio_url]
-        body["prompt"] += " The characters sing and dance in sync with the reference audio."
-    return hf_submit(settings, settings["seedance_endpoint"], body)
+    try:
+        return hf_submit(settings, settings["seedance_endpoint"], {**body, "bitrate_mode": "high"})
+    except UserError as e:
+        if "bitrate" not in str(e).lower():
+            raise
+        return hf_submit(settings, settings["seedance_endpoint"], body)  # this account can't ask for high bitrate
 
 
 # ============================================================== price check
@@ -1127,58 +1185,6 @@ def transcribe_song(settings, song_path):
     return words
 
 
-def _plain(word):
-    return re.sub(r"[^a-z0-9]", "", word.lower())
-
-
-def assign_sung_words(plan, sung):
-    """Write onto each scene the words actually sung during it, using the timing heard in the song."""
-    timed = align_lyrics(plan, sung)
-    placed = ([(w, t[0]) for line in timed for w, t in zip(line["words"], line["times"])] if timed
-              else [(w["text"], w["start"]) for w in sung])
-    for sc in plan["scenes"]:
-        sc["sung"] = " ".join(w for w, at in placed if sc["start"] <= at < sc["end"])
-
-
-MIN_LYRICS_HEARD = 0.4  # below this the transcript can't be trusted to place the captions
-UNHEARD_WORD_SECONDS = 0.35
-
-
-def align_lyrics(plan, sung):
-    """Pin the written lyrics to the sung words. Returns caption lines as
-    [{words: [...], times: [(start, end), ...]}], or None if too little of the lyrics was heard.
-    The written lyrics stay the text (transcripts mishear); only the timing comes from the audio."""
-    lines = [words for sec in plan["sections"] for words in _lyric_lines(sec.get("lyrics"))]
-    written = [w for line in lines for w in line]
-    if not written or not sung:
-        return None
-    times = [None] * len(written)
-    matcher = difflib.SequenceMatcher(None, [_plain(w) for w in written],
-                                      [_plain(w["text"]) for w in sung], autojunk=False)
-    for block in matcher.get_matching_blocks():
-        for k in range(block.size):
-            word = sung[block.b + k]
-            times[block.a + k] = (word["start"], word["end"])
-    if sum(t is not None for t in times) / len(written) < MIN_LYRICS_HEARD:
-        return None
-    # A word the transcript missed goes right after the word before it, or just before the next heard word.
-    for i, t in enumerate(times):
-        if t is None and i and times[i - 1]:
-            start = times[i - 1][1]
-            limit = next((x[0] for x in times[i:] if x), start + UNHEARD_WORD_SECONDS)
-            if limit > start:
-                times[i] = (start, min(start + UNHEARD_WORD_SECONDS, limit))
-    for i in range(len(times) - 1, -1, -1):
-        if times[i] is None:
-            end = times[i + 1][0] if i + 1 < len(times) and times[i + 1] else 0.0
-            times[i] = (max(0.0, end - UNHEARD_WORD_SECONDS), end)
-    out, at = [], 0
-    for words in lines:
-        out.append({"words": words, "times": times[at:at + len(words)]})
-        at += len(words)
-    return out
-
-
 # ============================================================== ffmpeg
 
 FFMPEG_STEP_TIMEOUT = 120  # one scene segment never legitimately takes this long
@@ -1219,15 +1225,6 @@ def frame_size(aspect):
 
 # Supabase's default upload limit is 50 MB. ffmpeg overshoots a bitrate cap on short, busy segments,
 # so aim well under it.
-UPLOAD_LIMIT_MB = 50
-MAX_VIDEO_MB = 38
-MAX_VIDEO_KBPS = 3000
-
-
-def video_kbps(plan):
-    """A video bitrate that keeps the whole file under the upload limit, audio included."""
-    seconds = max(1.0, plan["scenes"][-1]["end"])
-    return min(MAX_VIDEO_KBPS, int(MAX_VIDEO_MB * 8000 / seconds) - 192)
 
 
 _captions_supported = None
@@ -1329,35 +1326,6 @@ def _ass_header(w, h):
 POP = r"{\fad(120,120)\t(0,140,\fscx108\fscy108)\t(140,280,\fscx100\fscy100)}"
 
 
-def write_lyric_captions(plan, w, h, path, timed=None):
-    """Karaoke-style ASS file: each word fills from white to sunshine yellow as it's sung.
-    timed (from align_lyrics) gives real timing; without it, lines are spread across their scenes."""
-    out = _ass_header(w, h)
-    pop = POP
-    if timed:
-        out += _timed_caption_events(timed, pop)
-    for s in ([] if timed else plan["scenes"]):
-        lines = _lyric_lines(s.get("lyric"))
-        if not lines:
-            continue
-        total_words = sum(len(l) for l in lines)
-        t = s["start"]
-        for words in lines:
-            span = (s["end"] - s["start"]) * len(words) / total_words
-            weights = [max(1, len(re.sub(r"\W", "", wd))) for wd in words]
-            # Finish the fill a little early so the line reads as "done" before it fades.
-            sing_cs = span * 90  # centiseconds, 90% of the line's time
-            karaoke = " ".join(
-                f"{{\\kf{max(1, round(sing_cs * wt / sum(weights)))}}}"
-                + _ass_text(wd)
-                for wd, wt in zip(words, weights))
-            out.append(f"Dialogue: 0,{_ass_time(t)},{_ass_time(t + span)},Sing,,0,0,0,,{pop}{karaoke}")
-            t += span
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-    return path
-
-
 # Intro and outro are encoded and stored once, then joined to each video without re-encoding,
 # so their format has to match the main video's: same size, frame rate, codec and audio.
 BUMPER_ENCODE = ["-c:v", "libx264", "-preset", "superfast", "-bf", "0", "-crf", "22", "-maxrate", "2500k",
@@ -1450,58 +1418,3 @@ def _discard_download(url, path):
     """Free the temp copy right away: a full video's 1080p clips would fill the server's /tmp."""
     if not store.local_media_path(url):
         os.remove(path)
-
-
-def render(plan, song_path, aspect, out_path, captions=False, on_progress=None, timed_lyrics=None):
-    """Stitch scene clips (or Ken-Burns stills) to the song timing, then lay the song on top.
-    With captions, sing-along lyrics are burned in while each segment is encoded (no extra pass).
-    on_progress(done, total) is called after each scene."""
-    w, h = frame_size(aspect)
-    fit = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,fps=30"
-    ass = write_lyric_captions(plan, w, h, store.tmp_path("lyrics.ass"), timed_lyrics) if captions else None
-    fonts = fonts_dir() if captions else None
-    kbps = video_kbps(plan)
-    parts = []
-    for s in plan["scenes"]:
-        dur = max(0.5, s["end"] - s["start"])
-        seg = store.tmp_path(f"seg{s['n']}.mp4")
-        enc = ["-t", f"{dur:.3f}", "-an", "-c:v", "libx264", "-preset", "superfast", "-bf", "0",
-               "-crf", "22", "-maxrate", f"{kbps}k", "-bufsize", f"{kbps * 2}k", "-pix_fmt", "yuv420p", seg]
-        # Shift to song time so the shared ASS file lines up, burn captions, shift back.
-        sub = (f",setpts=PTS+{s['start']:.3f}/TB,ass=filename='{ass}':fontsdir='{fonts}',"
-               "setpts=PTS-STARTPTS") if ass else ""
-        if s.get("video"):
-            src = store.download_to(s["video"], store.tmp_path("clip.mp4"))
-            _run(["-stream_loop", "-1", "-i", src, "-vf", fit + sub] + enc)
-            _discard_download(s["video"], src)
-        elif s.get("image"):
-            src = store.download_to(s["image"], store.tmp_path("still.png"))
-            frames = int(dur * 30) + 1
-            zw, zh = w * 3 // 2, h * 3 // 2
-            zoom = (f"scale={zw}:{zh}:force_original_aspect_ratio=increase,crop={zw}:{zh},"
-                    f"zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                    f":d={frames}:s={w}x{h}:fps=30,setsar=1")
-            _run(["-loop", "1", "-i", src, "-vf", zoom + sub] + enc)
-            _discard_download(s["image"], src)
-        else:
-            _run(["-f", "lavfi", "-i", f"color=c=0xFFE9A8:s={w}x{h}:r=30", "-vf", "null" + sub] + enc)
-        parts.append(seg)
-        if on_progress:
-            on_progress(len(parts), len(plan["scenes"]))
-    listing = store.tmp_path("list.txt")
-    with open(listing, "w") as f:
-        f.writelines(f"file '{p}'\n" for p in parts)
-    if song_path:
-        _run(["-f", "concat", "-safe", "0", "-i", listing, "-i", song_path, "-map", "0:v",
-              "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-shortest",
-              "-movflags", "+faststart", out_path])
-    else:
-        _run(["-f", "concat", "-safe", "0", "-i", listing, "-c", "copy",
-              "-movflags", "+faststart", out_path])
-    for p in parts + ([ass] if ass else []):
-        os.remove(p)
-    size_mb = os.path.getsize(out_path) / 1e6
-    if size_mb >= UPLOAD_LIMIT_MB:
-        raise UserError(f"The finished video is {size_mb:.0f} MB, over the {UPLOAD_LIMIT_MB} MB storage limit. "
-                        "Raise the upload limit in Supabase (Storage settings) and render again.")
-    return out_path

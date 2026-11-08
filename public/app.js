@@ -660,7 +660,7 @@ async function openBriefForm(brief, project) {
       <label>Cast</label>
       <div class="chips" id="cast-pick">${state.characters.length ? state.characters.map((c) => `<span class="chip ${cast.has(c.id) ? "on" : ""}" data-cid="${c.id}">${esc(c.name)}</span>`).join("") : `<span class="muted">No characters yet. Add some in the Characters tab for a consistent cast.</span>`}</div>
       <label>Notes for Claude <textarea name="notes" rows="2">${esc(brief.notes)}</textarea></label>
-      <div class="row"><button class="primary" type="submit">${project ? "Save brief" : "Save & write the song"}</button></div>
+      <div class="row">${project ? `<button class="primary" type="submit">Save brief</button>` : `<button class="primary big-go" type="submit" id="go-all">▶ Save & do everything</button><button type="submit">Save & write the song</button>`}</div>
     </form>`;
   $("#back").onclick = loadProjects;
   $("#cast-pick").onclick = (e) => { const c = e.target.dataset.cid; if (c) { e.target.classList.toggle("on"); } };
@@ -669,7 +669,7 @@ async function openBriefForm(brief, project) {
     const fd = new FormData(e.target);
     const b = Object.fromEntries(fd.entries());
     b.cast = $$("#cast-pick .chip.on").map((x) => x.dataset.cid);
-    const btn = $("button[type=submit]", e.target);
+    const btn = e.submitter || $("button[type=submit]", e.target);
     if (project) {
       const p = await busy(btn, () => queued(() => api("PUT", `/api/projects/${project.id}`, { brief: b })));
       if (p) renderProject(p);
@@ -678,7 +678,8 @@ async function openBriefForm(brief, project) {
     const p = await busy(btn, () => api("POST", "/api/projects", { brief: b }));
     if (!p) return;
     state.project = p; renderProject(p);
-    if (state.keys.anthropic_api_key?.set) writeSong($("#write-song"));
+    if (btn.id === "go-all") toggleAutopilot(p);
+    else if (state.keys.anthropic_api_key?.set) writeSong($("#write-song"));
   };
 }
 
@@ -704,6 +705,8 @@ function renderProject(p) {
   const scenes = plan?.scenes || [];
   const imgs = scenes.filter((s) => s.image).length, vids = scenes.filter((s) => s.video).length;
   const keyframesDone = scenes.length > 0 && scenes.every((s) => s.image && !s.jobs?.image);
+  const approvedCount = scenes.filter(isApproved).length, declined = scenes.filter((s) => s.review?.status === "declined" && !s.jobs?.video);
+  const allApproved = scenes.length > 0 && approvedCount === scenes.length;
   const end = scenes.length ? scenes[scenes.length - 1].end : 0;
   const task = runningTask(p);
   const folds = readFolds(ed);
@@ -711,8 +714,9 @@ function renderProject(p) {
   ed.innerHTML = `<button class="ghost small back" id="back">← All videos</button>
     <div class="editor-head">
       <div><h1>${esc(plan?.title || p.brief.topic)}</h1><p class="muted">${esc(p.brief.lesson || "")} ${p.brief.setting ? "· " + esc(p.brief.setting) : ""}</p></div>
-      <div class="row"><button class="small primary" id="make-all">${autopilotOn(p.id) ? "Stop making this video" : "Make the whole video"}</button><button class="small" id="edit-brief">Edit brief</button><button class="small ghost danger" id="del-project">Delete</button></div>
+      <div class="row"><button class="primary big-go" id="make-all">${autopilotOn(p.id) ? "■ Stop" : "▶ Do everything"}</button><button class="small" id="edit-brief">Edit brief</button><button class="small ghost danger" id="del-project">Delete</button></div>
     </div>
+    ${autopilotOn(p.id) ? `<div class="banner go">${esc(autopilotStatus(p))}</div>` : ""}
     ${task ? `<div class="banner"><span class="spinner"></span> <b>${esc(task.label)}…</b> <span id="task-eta" data-kind="${esc(task.kind)}">${task.kind === "render" ? `Expect ${roughTime(renderEstimate(scenes))}` : `Started ${ago(task.started)}`}</span>. You can leave this page or close the tab; you'll get a notice when it's done.</div>` : ""}
     <div class="steps">
       <span class="step ${plan ? "done" : ""}">1. Song</span>
@@ -721,7 +725,8 @@ function renderProject(p) {
       <span class="step ${plan?.direction ? "done" : ""}">4. Direction</span>
       <span class="step ${scenes.length && imgs === scenes.length ? "done" : ""}">5. Keyframes ${imgs}/${scenes.length}</span>
       <span class="step ${scenes.length && vids === scenes.length ? "done" : ""}">6. Animation ${vids}/${scenes.length}</span>
-      <span class="step ${p.final ? "done" : ""}">7. Publish</span>
+      <span class="step ${allApproved ? "done" : ""}">7. Review ${approvedCount}/${scenes.length}</span>
+      <span class="step ${p.final ? "done" : ""}">8. Publish</span>
     </div>
 
     <section class="panel card">
@@ -742,8 +747,7 @@ function renderProject(p) {
           <label style="margin:0"><input type="file" id="song-file" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden><span class="btn-like">Upload MP3 or WAV</span></label>
         </div></div>
       ${p.song ? `<audio controls src="${esc(p.song.url)}" style="width:100%"></audio>
-        <p class="muted">Song length ${fmtTime(p.song.duration)} · storyboard ${fmtTime(end)}
-        ${Math.abs(p.song.duration - end) > 1 ? ` <button class="small primary" id="retime">Fit scenes to song</button>` : " ✓ in sync"}</p>`
+        ${timingSummary(p)}`
       : `<p class="muted">Generate the vocals and music from these lyrics, or make the song in Suno or elsewhere and upload it. Scenes can be re-timed to fit.</p>`}
     </section>
 
@@ -752,7 +756,8 @@ function renderProject(p) {
 
     <section class="panel">
       <div class="panel-head"><h2>Scenes</h2>
-        <div class="row"><button id="all-images" class="${keyframesDone ? "" : "primary"}">Generate all keyframes</button><button id="all-videos" class="${keyframesDone ? "primary" : ""}" ${keyframesDone ? "" : "disabled"} title="${keyframesDone ? "" : "Unlocks when every scene has its keyframe"}">Animate all</button></div></div>
+        <div class="row"><button id="all-images" class="${keyframesDone ? "" : "primary"}">Generate all keyframes</button><button id="all-videos" class="${keyframesDone && vids < scenes.length ? "primary" : ""}" ${keyframesDone ? "" : "disabled"} title="${keyframesDone ? "" : "Unlocks when every scene has its keyframe"}">Animate all</button>${declined.length ? `<button id="redo-declined" class="primary">Redo ${declined.length} declined</button>` : ""}</div></div>
+      ${vids ? `<p class="muted">Watch each scene's preview with the song and its captions, then approve or decline it. The final video is the approved previews joined exactly as you saw them. ${approvedCount}/${scenes.length} approved.</p>` : ""}
       ${keyframesDone ? "" : `<p class="muted">Animate all unlocks when all ${scenes.length} keyframes are done (${imgs} so far).</p>`}
       <div class="scenes">${scenes.map(sceneCard).join("")}</div>
     </section>
@@ -766,7 +771,8 @@ function renderProject(p) {
           <label class="check"><input type="checkbox" id="captions" ${state.settings.sing_along_captions !== false ? "checked" : ""}> Sing-along lyrics: karaoke captions where each word lights up as it's sung</label>
           <label class="check"><input type="checkbox" id="add-intro" ${state.settings.add_intro !== false ? "checked" : ""}> Open with the animated channel intro (make it in Settings)</label>
           <label class="check"><input type="checkbox" id="add-outro" ${state.settings.add_outro !== false ? "checked" : ""}> End with an outro: meet the cast, then like and subscribe</label>
-          <div class="row"><button class="primary" id="render" ${lock("render", "Rendering…", p.final ? "Re-render" : "Render video")}</button><span class="muted">Takes ${roughTime(renderEstimate(scenes))}, no credits used</span></div>
+          <div class="row"><button class="${allApproved ? "primary" : ""}" id="render" ${allApproved ? "" : `title="Approve every scene first"`} ${lock("render", "Rendering…", allApproved ? (p.final ? "Re-render" : "Render approved video") : `Render (${approvedCount}/${scenes.length} approved)`)}</button><button class="small ghost" id="render-draft">Render a draft</button></div>
+          <p class="muted">${allApproved ? "Joins the approved previews exactly as you saw them, no credits used." : "The final render unlocks when every scene is approved. A draft uses whatever is there now."}</p>
         </div>
         <div>
           <div class="thumb">${p.thumbnail ? `<img src="${esc(p.thumbnail)}" alt="Thumbnail">` : p.thumb_job ? `<span class="spinner"></span>` : "No thumbnail yet"}</div>
@@ -790,13 +796,14 @@ function renderProject(p) {
 // Presses each step's button when the one before it is done. It runs while this video is open
 // and picks up where it left off when you come back. Any failure stops it, so nothing is paid for twice.
 const AUTOPILOT_KEY = "kidsong.autopilot", AUTOPILOT_RETRY_MS = 20000;
-const USD_PER_SCENE = { lipsync: 0.85, kling_i2v: 0.45, wan_i2v: 0.85, ltx_fast: 0.85 };
+const USD_PER_SCENE = { seedance_ref: 1.5, kling_i2v: 0.45, wan_i2v: 0.85, ltx_fast: 0.85 };
 const autopilot = { step: "", at: 0, batching: false };
 function autopilotOn(pid) { return readLocal(AUTOPILOT_KEY) === pid; }
 function autopilotNext(p) {
   const scenes = p.plan?.scenes || [];
   if (!p.plan) return { step: "write", button: "#write-song" };
   if (!p.song) return { step: "compose", button: "#compose" };
+  if (!p.song.timing) return { step: "timing", button: "#retime" };
   if (!p.plan.choreography) return { step: "choreograph", button: "#choreograph" };
   if (!p.plan.direction) return { step: "direct", button: "#direct" };
   const locs = p.plan.direction.locations;
@@ -804,13 +811,29 @@ function autopilotNext(p) {
   if (failedSet) return { stop: `The set photo of ${failedSet.name} failed: ${failedSet.error}` };
   if (locs.some((l) => l.job)) return {};
   if (locs.some((l) => !l.image)) return { step: "plates", button: "#all-plates" };
-  if (scenes.some((s) => s.errors?.image || s.errors?.video)) return { stop: "A scene failed. Fix or redo it, then press Make the whole video again." };
-  if (scenes.some((s) => s.jobs?.image || s.jobs?.video) || p.thumb_job) return {};
+  if (scenes.some((s) => s.errors?.image || s.errors?.video || s.errors?.preview)) return { stop: "A scene failed. Fix or redo it, then press Do everything again." };
+  if (scenes.some((s) => s.jobs?.image || s.jobs?.video) || p.thumb_job) return { wait: "Generating on Higgsfield…" };
   if (scenes.some((s) => !s.image)) return { step: "keyframes", button: "#all-images" };
   if (scenes.some((s) => !s.video)) return { step: "animation", button: "#all-videos" };
+  if (scenes.some((s) => !s.preview)) return { wait: "Making each scene's preview with the song…" };
+  if (scenes.some((s) => s.review?.status === "declined")) return { step: "redo", button: "#redo-declined" };
+  const left = scenes.filter((s) => !isApproved(s)).length;
+  if (left) return { wait: `Your turn: watch each scene's preview below and approve or decline it (${left} left). Declined scenes are remade automatically, and the video renders itself once everything is approved.` };
   if (!p.thumbnail) return p.thumb_error ? { stop: `The thumbnail failed: ${p.thumb_error}` } : { step: "thumbnail", button: "#thumb" };
   if (!p.final) return { step: "render", button: "#render" };
   return { stop: "Your video is ready to download and publish.", done: true };
+}
+const STEP_LABEL = {
+  write: "Writing the song and storyboard…", compose: "Making the music…", timing: "Timing the lyrics to the song…",
+  choreograph: "Choreographing the dance…", direct: "Directing every shot…", plates: "Making the set photos…",
+  keyframes: "Painting the keyframes…", animation: "Animating every scene with the song…", redo: "Remaking the declined scenes…",
+  thumbnail: "Making the thumbnail…", render: "Rendering the approved video…",
+};
+function autopilotStatus(p) {
+  const task = runningTask(p);
+  if (task) return `Doing everything: ${task.label}…`;
+  const next = autopilotNext(p);
+  return next.wait || (next.step ? `Doing everything: ${STEP_LABEL[next.step] || next.step}` : next.stop || "");
 }
 function autopilotStep(p) {
   if (!autopilotOn(p.id) || autopilot.batching || runningTask(p)) return;
@@ -818,7 +841,7 @@ function autopilotStep(p) {
   if (next.stop) {
     writeLocal(AUTOPILOT_KEY, null);
     toast(next.stop, !next.done);
-    $("#make-all").textContent = "Make the whole video";
+    $("#make-all").textContent = "▶ Do everything";
     return;
   }
   if (!next.step || (autopilot.step === next.step && Date.now() - autopilot.at < AUTOPILOT_RETRY_MS)) return;
@@ -832,13 +855,24 @@ function toggleAutopilot(p) {
     renderProject(p);
     return;
   }
+  if (p.final && p.plan?.scenes.every(isApproved)) { toast("This video is already done. Download it under Render and publish."); return; }
   if (!hasKeys("anthropic_api_key", "elevenlabs_api_key", "hf_key_id", "hf_key_secret")) return;
   const count = p.plan?.scenes.length || Math.ceil((+p.brief.length || 150) / 5);
   const left = p.plan ? p.plan.scenes.filter((s) => !s.video).length : count;
   const cost = left * (USD_PER_SCENE[state.settings.video_mode] ?? 0.85) + 1;
-  if (!confirm(`Make everything still missing: song, music, choreography, creative direction, set photos, keyframes, animation, thumbnail and final render. This costs about $${Math.round(cost)}. Keep this video open while it runs.`)) return;
+  if (!confirm(`Do everything still missing: song, music, lyric timing, choreography, creative direction, set photos, keyframes and animation. It then waits for you to approve each scene (declined ones are remade), and renders on its own once all are approved. This costs about $${Math.round(cost)}. Keep this video open while it runs.`)) return;
   writeLocal(AUTOPILOT_KEY, p.id);
   renderProject(p);
+}
+
+function isApproved(s) { return s.review?.status === "approved" && !!s.preview && s.review.key === s.preview.key; }
+
+function timingSummary(p) {
+  const t = p.song.timing;
+  if (!t) return `<p class="muted">Song length ${fmtTime(p.song.duration)}. The lyrics aren't timed to it yet. <button class="small primary" id="retime">Time the lyrics and fit the scenes</button></p>`;
+  const unheard = t.filter((l) => !l.heard);
+  return `<p class="muted">Song length ${fmtTime(p.song.duration)} · ${t.length - unheard.length} of ${t.length} lyric lines timed to the song, and every scene is cut to start as its words are sung. <button class="small" id="retime">Re-time</button></p>
+    ${unheard.length ? `<details class="fold" data-fold="${p.id}:unheard"><summary>${unheard.length} line${unheard.length === 1 ? "" : "s"} couldn't be heard in the song, so ${unheard.length === 1 ? "it gets" : "they get"} no captions and no singing</summary><ul>${unheard.map((l) => `<li>${esc(l.words.join(" "))}</li>`).join("")}</ul></details>` : ""}`;
 }
 
 function choreoPanel(p, lock) {
@@ -885,20 +919,29 @@ function locationName(id) { return state.project?.plan?.direction?.locations.fin
 
 function sceneCard(s) {
   const jobs = s.jobs || {}, errs = s.errors || {};
-  const media = s.video ? `<video src="${esc(s.video)}" preload="none" controls muted loop playsinline poster="${esc(s.image || "")}"></video>`
+  const media = s.preview ? `<video src="${esc(s.preview.url)}" preload="none" controls playsinline poster="${esc(s.image || "")}"></video>`
+    : s.video ? `<video src="${esc(s.video)}" preload="none" controls muted loop playsinline poster="${esc(s.image || "")}"></video>`
     : s.image ? `<img src="${esc(s.image)}" alt="Scene ${s.n} keyframe" loading="lazy">`
     : jobs.image ? `<span><span class="spinner"></span><br>painting keyframe…</span>` : `<span>No keyframe yet</span>`;
-  return `<div class="card scene" data-n="${s.n}">
+  const review = s.review?.status, ok = isApproved(s);
+  const reviewRow = s.preview ? `<div class="row review">
+        <span class="chip ${ok ? "approved" : review === "declined" ? "declined" : ""}">${ok ? "✓ Approved" : review === "declined" ? "✗ Declined" : "Needs review"}</span>
+        <button class="small ${ok ? "" : "primary"}" data-review="approve" ${ok || jobs.video ? "disabled" : ""}>Approve</button>
+        <button class="small ghost danger" data-review="decline" ${jobs.video ? "disabled" : ""}>Decline</button></div>
+      ${review === "declined" && s.review.note ? `<p class="muted">To fix: ${esc(s.review.note)}</p>` : ""}`
+    : s.video && !errs.preview ? `<p class="muted"><span class="spinner"></span> Making the preview with the song…</p>` : "";
+  return `<div class="card scene ${ok ? "is-approved" : review === "declined" ? "is-declined" : ""}" data-n="${s.n}">
     <div class="media">${media}</div>
     <div class="scene-body">
       <div class="meta"><span>Scene ${s.n} · ${esc(s.section)}</span><span>${fmtTime(s.start)}–${fmtTime(s.end)}</span></div>
       <p class="lyric">${s.sung !== undefined ? (s.sung ? `<span class="sung-label">Sung here:</span> ${esc(s.sung)}` : "<span class='muted'>No words in this part of the song</span>") : esc(s.lyric) || "<span class='muted'>Instrumental</span>"}</p>
       <div class="chips">${s.cast.map((id) => `<span class="chip">${esc(castName(id))}</span>`).join("")}${s.direction ? `<span class="chip shot">${esc(locationName(s.direction.location))} · ${esc(s.direction.shot_size)}</span>` : ""}</div>
-      ${errs.image ? `<p class="error">Keyframe: ${esc(errs.image)}</p>` : ""}${errs.video ? `<p class="error">Video: ${esc(errs.video)}</p>` : ""}
+      ${errs.image ? `<p class="error">Keyframe: ${esc(errs.image)}</p>` : ""}${errs.video ? `<p class="error">Video: ${esc(errs.video)}</p>` : ""}${errs.preview ? `<p class="error">Preview: ${esc(errs.preview)} <button class="small" data-act="preview">Try again</button></p>` : ""}
       <div class="row">
         <button class="small" data-act="image" ${jobs.image ? "disabled" : ""}>${jobs.image ? '<span class="spinner"></span> Keyframe' : s.image ? "Redo keyframe" : "Keyframe"}</button>
         <button class="small ${s.image && !s.video ? "primary" : ""}" data-act="video" ${!s.image || jobs.video ? "disabled" : ""}>${jobs.video ? '<span class="spinner"></span> Animating' : s.video ? "Re-animate" : "Animate"}</button>
       </div>
+      ${reviewRow}
       ${s.direction ? `<details class="fold" data-fold="scene:${s.n}:dir"><summary>Director's notes</summary>
         <p class="muted">${esc(s.direction.shot_size)}, ${esc(s.direction.angle)}, ${esc(s.direction.lens)} · ${esc(s.direction.camera_move)}</p>
         <label>First frame <textarea data-d="keyframe" rows="4">${esc(s.direction.keyframe)}</textarea></label>
@@ -1015,7 +1058,27 @@ function bindEditor(p) {
     const fd = new FormData(); fd.append("file", e.target.files[0]);
     action($("#compose"), () => api("POST", `/api/projects/${id}/song/upload`, fd));
   };
-  const retime = $("#retime"); if (retime) retime.onclick = (e) => action(e.target, () => api("POST", `/api/projects/${id}/retime`));
+  const retime = $("#retime");
+  if (retime) retime.onclick = (e) => {
+    if (!hasKeys("elevenlabs_api_key")) return;
+    if (p.song.timing && p.plan.scenes.some((s) => s.video) && !confirm("Re-time the lyrics and re-cut the scenes? Any scene whose start or end moves loses its animation and approval, and needs animating again.")) return;
+    action(e.target, () => api("POST", `/api/projects/${id}/retime`));
+  };
+  const redo = $("#redo-declined");
+  if (redo) redo.onclick = (e) => batch(e.target, "video", (s) => s.review?.status === "declined" && s.image && !s.jobs?.video);
+  $$(".scene button[data-review]").forEach((b) => (b.onclick = async (e) => {
+    const btn = e.target.closest("button"), n = btn.closest(".scene").dataset.n, decision = btn.dataset.review;
+    let note = "";
+    if (decision === "decline") {
+      note = prompt(`What's wrong with scene ${n}? This goes into the remake, e.g. "an extra girl walks in", "Sofia's braids disappear", "mouths don't match the words". Leave blank to just remake it.`, "");
+      if (note === null) return;
+    }
+    await action(btn, () => api("POST", `/api/projects/${id}/scenes/${n}/review`, { decision, note }));
+  }));
+  $("#render-draft").onclick = (e) => {
+    toast("Rendering a draft from whatever is there now. You'll get a notice.");
+    action(e.target, () => api("POST", `/api/projects/${id}/render`, { draft: true }), [], { kind: "render", label: "Rendering a draft" });
+  };
   $("#thumb").onclick = (e) => action(e.target, () => api("POST", `/api/projects/${id}/thumbnail`), ["hf_key_id", "hf_key_secret"]);
   for (const [box, key] of [["#captions", "sing_along_captions"], ["#add-intro", "add_intro"], ["#add-outro", "add_outro"]]) {
     $(box).onchange = (e) => saveSettings({ settings: { [key]: e.target.checked } }).catch((err) => toast(err.message, true));

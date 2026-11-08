@@ -12,6 +12,7 @@ from flask import Flask, abort, g, jsonify, request, send_from_directory
 import direction as dr
 import services as sv
 import store
+import sync
 import vault
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +37,7 @@ DEFAULTS = {
     "character_guidelines": sv.CHARACTER_GUIDELINES,
     "aspect_ratio": "16:9",
     "image_endpoint": "xai/grok-imagine-image-2.0",
-    "video_mode": "lipsync",
+    "video_mode": "seedance_ref",
     "seedance_endpoint": "bytedance/seedance-2.0/reference-to-video",
     "kling_endpoint": "kling-video/v2.5-turbo/pro/image-to-video",
     "wan_endpoint": "wan/v2.6/image-to-video",
@@ -44,6 +45,7 @@ DEFAULTS = {
     "image_resolution": "1k",
     "image_quality": "medium",
     "video_resolution": "1080p",
+    "max_video_mb": 50,
     "sing_along_audio": True,
     "sing_along_captions": True,
     "add_intro": True,
@@ -75,6 +77,7 @@ def settings(overrides=None):
     s = dict(DEFAULTS)
     s.update({k: v for k, v in {**plain, **secrets, **(overrides or {})}.items()
               if k in DEFAULTS and v not in (None, "")})
+    s["video_mode"] = sv.video_mode(s)
     return s
 
 
@@ -278,12 +281,17 @@ def advance_project(s, p, budget):
                 sc[kind] = url
                 if kind == "image" and sc.get("video"):
                     stale.append(sc.pop("video"))  # a new keyframe invalidates the old clip
+                if kind == "video":
+                    sc.pop("review", None)  # a new clip needs a new look
             else:
                 sc.setdefault("errors", {})[kind] = err
             what = "Keyframe" if kind == "image" else "Animation"
             add_event(q, f"{what} for scene {n}", ok=bool(url), error=err, kind=kind)
     update_doc("projects", pid, apply)
     store.delete_media(stale)
+    for kind, n, rid, url, err in results:
+        if kind == "video" and url:
+            _try_preview(s, pid, n)
 
 
 def channel_doc():
@@ -773,7 +781,7 @@ def projects_delete(pid):
     p = load_or_404("projects", pid)
     urls = [p.get("thumbnail"), p.get("final"), (p.get("song") or {}).get("url")]
     for sc in (p.get("plan") or {}).get("scenes", []):
-        urls += [sc.get("image"), sc.get("video")]
+        urls += [sc.get("image"), sc.get("video"), (sc.get("preview") or {}).get("url")]
     urls += [loc.get("image") for loc in ((p.get("plan") or {}).get("direction") or {}).get("locations", [])]
     store.delete_media(urls)
     store.delete_doc("projects", pid)
@@ -886,7 +894,7 @@ def song_compose(pid):
         if not p.get("plan"):
             raise sv.UserError("Write the song first.")
         return _replace_song(_song_record(pid, sv.compose_song(s, p["plan"]), "elevenlabs", ".mp3"))
-    return jsonify(_sync_scene_words(s, pid, run_project_task(pid, "compose", "Composing music", work)))
+    return jsonify(_after_new_song(s, pid, run_project_task(pid, "compose", "Composing music", work)))
 
 
 @app.post("/api/projects/<pid>/song/upload")
@@ -899,7 +907,7 @@ def song_upload(pid):
     if ext not in (".mp3", ".wav"):
         raise sv.UserError("Upload an .mp3 or .wav file.")
     p = update_doc("projects", pid, _replace_song(_song_record(pid, f.read(), "upload", ext)))
-    return jsonify(_sync_scene_words(settings(), pid, p))
+    return jsonify(_after_new_song(settings(), pid, p))
 
 
 @app.post("/api/projects/<pid>/retime")
@@ -907,35 +915,57 @@ def projects_retime(pid):
     p = load_or_404("projects", pid)
     if not (p.get("plan") and p.get("song")):
         raise sv.UserError("Add a song first.")
-    scenes = p["plan"]["scenes"]
-    factor = p["song"]["duration"] / max(1.0, scenes[-1]["end"])
-    for sc in scenes:
-        sc["start"], sc["end"] = round(sc["start"] * factor, 2), round(sc["end"] * factor, 2)
-    for sec in p["plan"]["sections"]:
-        sec["duration_seconds"] = round(sec["duration_seconds"] * factor, 2)
-    return jsonify(_sync_scene_words(settings(), pid, store.save_doc("projects", p)))
+    return jsonify(_fit_to_song(settings(), pid, p))
 
 
-def _sync_scene_words(s, pid, p):
-    """Fill in the words sung in each scene. A song that can't be heard yet just keeps the written lyric."""
-    if not (p.get("song") and p.get("plan")):
-        return p
-    words = p["song"].get("words")
-    if words is None:
-        song = store.download_to(p["song"]["url"], store.tmp_path("song.mp3"))
+def _song_file(p):
+    """The project's song on local disk, downloaded once per request."""
+    url = p["song"]["url"]
+    songs = g.setdefault("songs", {})
+    if url not in songs or not os.path.exists(songs[url]):
+        songs[url] = store.download_to(url, store.tmp_path("song" + (os.path.splitext(url)[1] or ".mp3")))
+    return songs[url]
+
+
+def _fit_to_song(s, pid, p):
+    """Time every lyric word in the song (by code, from the exact written lyrics), then cut the scenes so
+    each one covers the words it shows. Scenes that move lose their clip, preview and approval."""
+    song = p["song"]
+    path = _song_file(p)
+    heard = song.get("words")
+    if heard is None:
         try:
-            words = sv.transcribe_song(s, song)
+            heard = sv.transcribe_song(s, path)
         except sv.UserError as e:
-            app.logger.warning("Couldn't time the scenes: %s", e)
-            return p
-        finally:
-            sv._discard_download(p["song"]["url"], song)
+            app.logger.warning("Couldn't check which lines are heard: %s", e)
+    text = "\n".join(" ".join(words) for words in sync.lyric_lines(p["plan"]))
+    lines = sync.song_timing(p["plan"], sync.force_align(s, path, text), heard or [], song["duration"])
+    if heard is None:  # nothing to check against, so every line is captioned
+        for ln in lines:
+            ln["heard"] = True
+    cast_ids = p["brief"].get("cast", [])
 
     def apply(q):
-        if (q.get("song") or {}).get("url") == p["song"]["url"]:
-            q["song"]["words"] = words
-            sv.assign_sung_words(q["plan"], words)
+        if (q.get("song") or {}).get("url") != song["url"]:
+            return
+        q["song"].update(words=heard, timing=lines, timing_key=sync.timing_key(lines))
+        moved = set(sync.fit_scenes(q["plan"], lines, song["duration"], cast_ids))
+        stale = []
+        for sc in q["plan"]["scenes"]:
+            if sc["n"] in moved and (sc.get("video") or sc.get("preview")):
+                stale += [sc.pop("video", None), (sc.pop("preview", None) or {}).get("url")]
+                sc.pop("review", None)
+        store.delete_media(stale)
     return update_doc("projects", pid, apply)
+
+
+def _after_new_song(s, pid, p):
+    """Time a new song right away; if that fails, say why on the project instead of failing the upload."""
+    try:
+        return _fit_to_song(s, pid, p)
+    except sv.UserError as e:
+        error = str(e)
+        return update_doc("projects", pid, lambda q: add_event(q, "Timing the lyrics", False, error, "timing"))
 
 
 def _scene(p, n):
@@ -962,7 +992,7 @@ def scene_image(pid, n):
     sc = _scene(p, n)
     look = (p["plan"].get("direction") or {}).get("look")
     where = dr.location(p["plan"], (sc.get("direction") or {}).get("location"))
-    prompt, refs = sv.scene_image_prompt(s, sc, cast_for(sc["cast"]), look, where)
+    prompt, refs = sv.scene_image_prompt(s, sc, cast_for(sc["cast"]), look, where, _cast_of(p))
     return jsonify(_set_scene_job(pid, n, "image", sv.image_job(s, prompt, refs, s["aspect_ratio"])))
 
 
@@ -970,23 +1000,121 @@ def scene_image(pid, n):
 def scene_video(pid, n):
     s = settings()
     p = load_or_404("projects", pid)
-    if p.get("song") and "sung" not in _scene(p, n):  # a video made before scenes tracked their words
-        p = _sync_scene_words(s, pid, p)
     sc = _scene(p, n)
     if not sc.get("image"):
         raise sv.UserError(f"Scene {n} needs a keyframe image first.")
     audio = None
-    mode = s["video_mode"]
-    use_audio = bool(sc.get("sung")) if mode == "lipsync" else (
-        mode in ("seedance_ref", "wan_i2v") and s.get("sing_along_audio") not in (False, "false", "0"))
-    if p.get("song") and use_audio:
-        song = store.download_to(p["song"]["url"], store.tmp_path("song.mp3"))
-        clip = sv.audio_slice_wav(song, sc["start"], sc["end"])
+    if p.get("song") and sv.video_mode(s) in ("seedance_ref", "wan_i2v"):
+        # The scene's exact slice of the song: the model lip-syncs and dances to it.
+        clip = sv.audio_slice_wav(_song_file(p), sc["start"], sc["end"])
         with open(clip, "rb") as f:
             audio = sv.hf_upload(s, f.read(), "audio/wav")
         os.remove(clip)
-    job = sv.video_job(s, sc, cast_for(sc["cast"]), audio, p["plan"].get("bpm"))
+    review = sc.get("review") or {}
+    note = review.get("note", "") if review.get("status") == "declined" else ""
+    job = sv.video_job(s, sc, cast_for(sc["cast"]), audio, p["plan"].get("bpm"), _cast_of(p), note)
     return jsonify(_set_scene_job(pid, n, "video", job))
+
+
+# ------------------------------------------------------------------ scene previews and review
+# Each finished clip becomes a preview: the clip cut frame-exact to its place in the song, with that
+# slice of the song and the sing-along captions. You approve or decline each one; the final video is
+# the approved previews joined as they are, so it can only contain what you approved.
+
+def _wants_captions(s):
+    return s.get("sing_along_captions") not in (False, "false", "0") and sv.captions_supported()
+
+
+def _bumpers(s):
+    return any(s.get(k) not in (False, "false", "0") for k in ("add_intro", "add_outro"))
+
+
+def _preview_spec(s, p):
+    """(key function, captions file maker) for this project's previews with the current settings."""
+    song = p.get("song") or {}
+    captions = bool(_wants_captions(s) and song.get("timing"))
+    tkey = song.get("timing_key", "") if captions else ""
+    duration = song.get("duration") or p["plan"]["scenes"][-1]["end"]
+    kbps = sync.video_kbps(s, duration, _bumpers(s))
+    return captions, tkey, kbps
+
+
+def preview_key(s, p, sc):
+    captions, tkey, kbps = _preview_spec(s, p)
+    return sync.preview_key(sc, tkey, captions, s["aspect_ratio"], kbps)
+
+
+def _build_preview(s, pid, p, sc):
+    """Build and store one scene's preview; returns the project as saved."""
+    captions, tkey, kbps = _preview_spec(s, p)
+    key = sync.preview_key(sc, tkey, captions, s["aspect_ratio"], kbps)
+    ass = None
+    if captions:
+        w, h = sv.frame_size(s["aspect_ratio"])
+        ass = sync.write_captions(p["song"]["timing"], w, h, store.tmp_path("lyrics.ass"))
+    out = sync.build_preview(sc, _song_file(p) if p.get("song") else None, ass, s["aspect_ratio"], kbps,
+                             store.tmp_path(f"preview{sc['n']}.mp4"))
+    with open(out, "rb") as f:
+        url = store.put_file(f"projects/{pid}/scene{sc['n']}-preview.mp4", f.read(), "video/mp4")
+    os.remove(out)
+    if ass:
+        os.remove(ass)
+
+    def apply(q):
+        target = _scene(q, sc["n"])
+        if preview_key(s, q, target) != key:  # the scene changed while this was being built
+            store.delete_media([url])
+            return
+        store.delete_media([(target.get("preview") or {}).get("url")])
+        target["preview"] = {"url": url, "key": key}
+        target["errors"].pop("preview", None)
+        if (target.get("review") or {}).get("key") != key:
+            target.pop("review", None)
+    return update_doc("projects", pid, apply)
+
+
+def _try_preview(s, pid, n):
+    p = load_or_404("projects", pid)
+    sc = _scene(p, n)
+    try:
+        return _build_preview(s, pid, p, sc)
+    except (sv.UserError, RuntimeError) as e:
+        error = str(e)
+
+        def apply(q):
+            _scene(q, n)["errors"]["preview"] = error
+        return update_doc("projects", pid, apply)
+
+
+@app.post("/api/projects/<pid>/scenes/<int:n>/preview")
+def scene_preview(pid, n):
+    return jsonify(_try_preview(settings(), pid, n))
+
+
+def approved(s, p, sc):
+    review, preview = sc.get("review") or {}, sc.get("preview") or {}
+    return review.get("status") == "approved" and review.get("key") == preview.get("key") == preview_key(s, p, sc)
+
+
+@app.post("/api/projects/<pid>/scenes/<int:n>/review")
+def scene_review(pid, n):
+    s = settings()
+    data = body()
+    decision, note = data.get("decision"), str(data.get("note", "")).strip()[:500]
+    if decision not in ("approve", "decline", "clear"):
+        raise sv.UserError("Approve or decline the scene.")
+
+    def apply(q):
+        sc = _scene(q, n)
+        if decision == "clear":
+            sc.pop("review", None)
+            return
+        key = (sc.get("preview") or {}).get("key")
+        if decision == "approve" and key != preview_key(s, q, sc):
+            raise sv.UserError(f"Scene {n}'s preview is out of date. Wait for the new one, then approve it.")
+        sc["review"] = {"status": "approved" if decision == "approve" else "declined", "key": key,
+                        "note": note, "at": store.now()}
+    return jsonify(update_doc("projects", pid, apply))
 
 
 @app.post("/api/projects/<pid>/thumbnail")
@@ -1051,55 +1179,37 @@ def _outro(s, pid, p, song):
     return store.download_to(url, store.tmp_path("outro_ready.mp4"))
 
 
-def _song_timing(s, pid, p, song_path):
-    """Caption timing heard from the song, transcribed once per song. Returns (timed lines, note)."""
-    words = p["song"].get("words")
-    if words is None:
-        try:
-            words = sv.transcribe_song(s, song_path)
-        except sv.UserError as e:
-            return None, f"Captions use estimated timing and may drift: {e}"
-
-        def apply(q):
-            if (q.get("song") or {}).get("url") == p["song"]["url"]:
-                q["song"]["words"] = words
-        update_doc("projects", pid, apply)
-    timed = sv.align_lyrics(p["plan"], words)
-    if timed is None:
-        return None, ("Captions use estimated timing and may drift: too little of the lyrics could be "
-                      "heard in this song. Do the written lyrics match what's sung?")
-    return timed, None
+RENDER_BUILD_SECONDS = 200  # building missing previews stops here so the request ends in time
 
 
 @app.post("/api/projects/<pid>/render")
 def projects_render(pid):
     s = settings()
+    draft = bool(body().get("draft"))
 
     def work(p):
         if not p.get("plan"):
             raise sv.UserError("Write the song first.")
-        song = (store.download_to(p["song"]["url"], store.tmp_path("song.mp3"))
-                if p.get("song") else None)
-        want_captions = s.get("sing_along_captions") not in (False, "false", "0")
-        captions = want_captions and sv.captions_supported()
-        note = ("This server's ffmpeg can't draw captions, so the video was rendered without "
-                "sing-along lyrics." if want_captions and not captions else None)
-        timed = None
-        if captions and song:
-            timed, note = _song_timing(s, pid, p, song)
-        saved_at = [0.0]
-
-        def progress(done, total):
-            if time.time() - saved_at[0] < PROGRESS_SAVE_SECONDS:
-                return
-            saved_at[0] = time.time()
-
-            def apply(q):
-                if q.get("task"):
-                    q["task"].update(done=done, total=total)
-            update_doc("projects", pid, apply)
-        out = sv.render(p["plan"], song, s["aspect_ratio"], store.tmp_path("final.mp4"), captions, progress, timed)
-        notes = [note] if note else []
+        scenes = p["plan"]["scenes"]
+        if not draft:
+            waiting = [sc["n"] for sc in scenes if not approved(s, p, sc)]
+            if waiting:
+                raise sv.UserError(f"Approve every scene first. Still to approve: {', '.join(map(str, waiting))}.")
+        began, paths, notes = time.time(), [], []
+        if _wants_captions(s) is False and s.get("sing_along_captions") not in (False, "false", "0"):
+            notes.append("This server's ffmpeg can't draw captions, so the video has no sing-along lyrics.")
+        for i, sc in enumerate(scenes):
+            if (sc.get("preview") or {}).get("key") != preview_key(s, p, sc):  # only drafts get here
+                if time.time() - began > RENDER_BUILD_SECONDS:
+                    raise sv.UserError(f"Made previews for scenes up to {sc['n'] - 1}. Press Render again to finish.")
+                p = _build_preview(s, pid, p, sc)
+                sc = _scene(p, sc["n"])
+            paths.append((sc["preview"]["url"], store.download_to(sc["preview"]["url"], store.tmp_path(f"part{sc['n']}.mp4"))))
+            _progress(pid, i + 1, len(scenes))
+        song = _song_file(p) if p.get("song") else None
+        out = sync.assemble([path for _, path in paths], song, store.tmp_path("final.mp4"))
+        for url, path in paths:
+            sv._discard_download(url, path)
         intro = outro = None
         if song:
             try:
@@ -1116,16 +1226,34 @@ def projects_render(pid):
             for extra in (intro, outro):
                 if extra:
                     os.remove(extra)
-        note = " ".join(notes) or None
+        size_mb, limit = os.path.getsize(out) / 1e6, float(s.get("max_video_mb") or 50)
+        if size_mb > limit:
+            os.remove(out)
+            raise sv.UserError(f"The finished video is {size_mb:.0f} MB, over your {limit:.0f} MB storage limit. "
+                               "Raise the limit in Supabase and in Settings, then render again.")
+        if draft:
+            notes.append("Draft: not every scene was approved.")
         with open(out, "rb") as f:
             url = store.put_file(f"projects/{pid}/final.mp4", f.read(), "video/mp4")
         os.remove(out)
+        note = " ".join(notes) or None
 
         def apply(q):
             store.delete_media([q.get("final")])
             q["final"], q["render_note"] = url, note
         return apply
     return jsonify(run_project_task(pid, "render", "Rendering video", work))
+
+
+def _progress(pid, done, total, last=[0.0]):  # noqa: B006 - a deliberate per-process throttle
+    if time.time() - last[0] < PROGRESS_SAVE_SECONDS and done < total:
+        return
+    last[0] = time.time()
+
+    def apply(q):
+        if q.get("task"):
+            q["task"].update(done=done, total=total)
+    update_doc("projects", pid, apply)
 
 
 if __name__ == "__main__":

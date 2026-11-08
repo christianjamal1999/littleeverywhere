@@ -1,4 +1,4 @@
-"""Overrides for services.py and app.py: an intro built from the real logo, and room for it in the file size.
+"""Overrides for services.py and app.py: an intro built from the real logo.
 Loaded by api/index.py. Kept apart because the deploy tool can't reliably carry a file as large as services.py."""
 import math
 import os
@@ -8,33 +8,6 @@ from flask import jsonify
 import app as studio
 import services as sv
 import store
-
-# Supabase's default upload limit is 50 MB, and that has to hold the intro and outro too. ffmpeg overshot
-# its bitrate cap by 24% on a real video (short, busy segments), so allow for that and aim under the limit.
-TARGET_VIDEO_MB = 46
-BUMPERS_MB = 12
-BITRATE_OVERSHOOT = 1.25
-AUDIO_KBPS = 192
-
-
-def video_kbps(plan):
-    seconds = max(1.0, plan["scenes"][-1]["end"])
-    room = TARGET_VIDEO_MB - BUMPERS_MB
-    return min(sv.MAX_VIDEO_KBPS, int((room * 8000 / seconds - AUDIO_KBPS) / BITRATE_OVERSHOOT))
-
-
-_join_videos = sv.join_videos
-
-
-def join_videos(paths, out_path):
-    """Join, then stop with a clear message if the finished video won't fit in storage."""
-    _join_videos(paths, out_path)
-    size_mb = os.path.getsize(out_path) / 1e6
-    if size_mb >= sv.UPLOAD_LIMIT_MB:
-        raise sv.UserError(f"The finished video is {size_mb:.0f} MB, over the {sv.UPLOAD_LIMIT_MB} MB storage limit. "
-                           "Raise the upload limit in Supabase (Storage settings) and render again.")
-    return out_path
-
 
 # ============================================================== the intro
 
@@ -170,7 +143,5 @@ def channel_animate():
     return jsonify(studio.update_doc("app_settings", studio.CHANNEL_ID, apply))
 
 
-sv.video_kbps = video_kbps
-sv.join_videos = join_videos
 studio._channel_intro = _channel_intro
 studio.app.view_functions["channel_animate"] = channel_animate

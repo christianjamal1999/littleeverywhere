@@ -15,7 +15,7 @@ API = "https://api.vercel.com"
 TEAM = {"teamId": "team_7zaKVbwEyOW61BnVn5PrZFOA"}
 PROJECT = "kidsong-studio"
 ROOT = os.path.dirname(os.path.abspath(__file__))
-FILES = ["app.py", "services.py", "video_fixes.py", "store.py", "vault.py", "direction.py", "requirements.txt", "vercel.json", "api/index.py",
+FILES = ["app.py", "services.py", "video_fixes.py", "store.py", "vault.py", "direction.py", "sync.py", "requirements.txt", "vercel.json", "api/index.py",
          "public/app.js", "public/index.html", "public/style.css", "fonts/Fredoka-Bold.ttf", "fonts/OFL.txt"]
 
 

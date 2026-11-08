@@ -125,11 +125,10 @@
         <div class="two">
           <label>Animation model
             <select name="video_mode">
-              <option value="lipsync">Lip-sync: Wan hears the song on sung scenes, Kling for the rest</option>
+              <option value="seedance_ref">Seedance 2.0, best: lip-syncs to the song, keeps faces and hair on-model</option>
+              <option value="wan_i2v">Wan 2.6 (hears the song, no character references)</option>
               <option value="kling_i2v">Kling 2.5 Turbo (cheapest, no lip-sync)</option>
-              <option value="ltx_fast">LTX 2.5 Fast</option>
-              <option value="wan_i2v">Wan 2.6 (moves to the song)</option>
-              <option value="seedance_ref">Seedance 2.0 (moves to the song)</option>
+              <option value="ltx_fast">LTX 2.5 Fast (no lip-sync)</option>
             </select>
           </label>
           <label>Resolution
@@ -140,6 +139,8 @@
             </select>
           </label>
         </div>
+        <label>Storage limit per video (MB) <input type="number" name="max_video_mb" min="20" step="1">
+          <span class="muted">The finished video's bitrate is set to fit this. Supabase's free plan caps files at 50 MB, which forces heavy compression on 1080p; on Supabase Pro raise its upload limit (Storage settings) and this to 200 for crisp video.</span></label>
         <div class="two">
           <label>Keyframe resolution
             <select name="image_resolution">

@@ -231,6 +231,10 @@ For every shot write:
   their pose and expression at second 0, and which of the set's landmarks are visible and where. Name the
   cast but don't describe their faces or outfits; references handle that.
 - continuity: what must match the neighbouring shots: props in hands, positions, light, weather.
+Only the cast listed as "in shot" may be seen or mentioned in that shot's notes: never write who is out of
+frame, hiding or off-screen. Frame a shot of one person centered (two people: left and right of center) with
+no empty side of the frame left for someone else to fill, and no doorways or windows with people in them.
+Camera moves are slow; nothing whips past the lens, so every face stays sharp.
 Never change anyone's outfit, hair or age, never add new named characters, keep everything safe."""
 
 

@@ -305,3 +305,12 @@ table.data td .muted { font-size: 12px; }
 .chip.shot { background: var(--sunken); }
 .photo-previews { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
 .photo-previews img { height: 84px; aspect-ratio: 3/4; object-fit: cover; border-radius: var(--radius-sm); }
+
+/* one button for everything, and the scene review */
+.big-go { font-size: 15px; padding: 9px 18px; }
+.banner.go { border-color: var(--primary); }
+.scene .review { align-items: center; margin-top: 6px; }
+.chip.approved { background: rgba(46,160,90,.16); color: var(--ok); border-color: rgba(46,160,90,.4); }
+.chip.declined { background: rgba(210,60,60,.14); color: #d24b4b; border-color: rgba(210,60,60,.4); }
+.scene.is-approved { border-color: rgba(46,160,90,.5); }
+.scene.is-declined { border-color: rgba(210,60,60,.5); }
