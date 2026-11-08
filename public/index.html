@@ -224,7 +224,7 @@
     <h2>New character</h2>
     <div class="source-pick" role="radiogroup" aria-label="How to make this character">
       <label><input type="radio" name="source" value="describe" checked> Describe them</label>
-      <label><input type="radio" name="source" value="photo"> From a photo</label>
+      <label><input type="radio" name="source" value="photo"> From photos of a real person</label>
     </div>
     <div class="two">
       <label>Name <input name="name" required autocomplete="off"></label>
@@ -236,9 +236,15 @@
       </label>
     </div>
     <div data-source="photo" hidden>
-      <label>Photo of the child <input type="file" name="file" accept="image/png,image/jpeg,image/webp"></label>
-      <p class="hint">A clear, well-lit photo facing the camera, with both ears and a smile, works best. It's used for this one generation and isn't saved here. It is sent to Anthropic and Higgsfield to make the character.</p>
-      <label class="check"><input type="checkbox" name="consent" value="yes"> I'm this child's parent or legal guardian, or I have their written permission to create an AI version of the child and publish it.</label>
+      <div class="source-pick" role="radiogroup" aria-label="Who is in the photos">
+        <label><input type="radio" name="kind" value="child" checked> A child</label>
+        <label><input type="radio" name="kind" value="adult"> An adult (parent, teacher, host)</label>
+      </div>
+      <label>Photos of the same person <span class="muted">1-4; more angles give a closer likeness</span>
+        <input type="file" name="file" accept="image/png,image/jpeg,image/webp" multiple></label>
+      <div class="photo-previews" id="photo-previews"></div>
+      <p class="hint">Best results: one clear, well-lit photo facing the camera with a natural smile and both ears showing, plus a three-quarter view and a full-body photo. No sunglasses, hats or heavy filters. The photos are used for this one generation and aren't saved here. They're sent to Anthropic and Higgsfield to make the AI version.</p>
+      <label class="check"><input type="checkbox" name="consent" value="yes"> <span id="consent-text">I'm this child's parent or legal guardian, or I have their written permission to create an AI version of the child and publish it.</span></label>
     </div>
     <p class="error" id="char-error" hidden></p>
     <div class="row between">

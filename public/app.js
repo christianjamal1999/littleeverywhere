@@ -427,7 +427,7 @@ async function renderCharacters() {
 function charCard(c) {
   const imgs = c.images.map((u) => `<figure><img src="${esc(u)}" alt="${esc(c.name)} reference" loading="lazy"><button class="small" data-act="rm-img" data-url="${esc(u)}" title="Remove image" aria-label="Remove image">×</button></figure>`).join("");
   const pending = c.job ? `<div class="empty"><span class="spinner"></span></div>` : "";
-  const sub = [c.age ? `Age ${esc(c.age)}` : "", `${c.images.length} reference${c.images.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+  const sub = [c.kind === "adult" ? "Adult" : "", c.age ? `Age ${esc(c.age)}` : "", c.source === "photo" ? "From photos" : "", `${c.images.length} reference${c.images.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
   return `<div class="card" data-id="${c.id}">
     <div class="char-head"><div><h2>${esc(c.name)}</h2><p class="muted">${sub}</p></div><button class="ghost danger small" data-act="del">Delete</button></div>
     <div class="char-imgs">${imgs}${pending}${!imgs && !pending ? `<div class="empty">No image yet</div>` : ""}</div>
@@ -439,7 +439,8 @@ function charCard(c) {
     </div>
     <details class="fold" data-fold="${c.id}:look"><summary>Appearance</summary>
       <label>Name <input data-f="name" value="${esc(c.name)}"></label>
-      <div class="two"><label>Age <input data-f="age" value="${esc(c.age)}"></label><label>Signature move <input data-f="signature" value="${esc(c.signature)}"></label></div>
+      <div class="two"><label>Age <input data-f="age" value="${esc(c.age)}"></label><label>Child or adult <select data-f="kind"><option value="child">Child</option><option value="adult" ${c.kind === "adult" ? "selected" : ""}>Adult</option></select></label></div>
+      <label>Signature move <input data-f="signature" value="${esc(c.signature)}"></label>
       <label>Look <textarea data-f="look" rows="3">${esc(c.look)}</textarea></label>
       <label>Face <span class="muted">eyes, eyebrows, nose, ears, teeth: must match in every scene</span><textarea data-f="face" rows="5">${esc(c.face)}</textarea></label>
       <label>Mannerisms <span class="muted">how they move</span><textarea data-f="mannerisms" rows="2">${esc(c.mannerisms)}</textarea></label>
@@ -461,20 +462,21 @@ function charCard(c) {
 // Uploads pass through Vercel, which refuses anything over about 4.5 MB, so big photos are resized
 // here first. References don't need more than this anyway.
 const MAX_IMAGE_SIDE = 2048, MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
-async function shrinkImage(file) {
+async function shrinkImage(file, maxBytes = MAX_UPLOAD_BYTES) {
   let bitmap;
   try { bitmap = await createImageBitmap(file); } catch { return file; }
-  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(bitmap.width, bitmap.height));
-  if (scale === 1 && file.size <= MAX_UPLOAD_BYTES) return file;
+  const side = maxBytes < MAX_UPLOAD_BYTES ? 1600 : MAX_IMAGE_SIDE;
+  const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+  if (scale === 1 && file.size <= maxBytes) return file;
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   let blob;
-  for (const quality of [0.9, 0.8, 0.65]) {
+  for (const quality of [0.9, 0.8, 0.65, 0.5]) {
     blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
-    if (blob.size <= MAX_UPLOAD_BYTES) break;
+    if (blob.size <= maxBytes) break;
   }
   return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
 }
@@ -512,11 +514,20 @@ $("#characters").addEventListener("click", async (e) => {
 });
 
 const charDialog = $("#char-dialog"), charForm = $("#char-form");
+const MAX_PHOTOS = 4;
+const CONSENT_TEXT = {
+  child: "I'm this child's parent or legal guardian, or I have their written permission to create an AI version of the child and publish it.",
+  adult: "These are photos of me, or I have this person's written permission to create an AI version of them and publish it.",
+};
 function showCharSource() {
-  const source = charForm.elements.source.value;
+  const f = charForm.elements, source = f.source.value;
   $$("[data-source]", charForm).forEach((el) => { el.hidden = el.dataset.source !== source; });
+  $("#consent-text").textContent = CONSENT_TEXT[f.kind.value];
+  const files = [...f.file.files];
+  $("#photo-previews").innerHTML = files.slice(0, MAX_PHOTOS).map((file) => `<img src="${URL.createObjectURL(file)}" alt="">`).join("")
+    + (files.length > MAX_PHOTOS ? `<p class="error">Only the first ${MAX_PHOTOS} photos will be used.</p>` : "");
 }
-charForm.addEventListener("change", (e) => { if (e.target.name === "source") showCharSource(); });
+charForm.addEventListener("change", (e) => { if (["source", "kind", "file"].includes(e.target.name)) showCharSource(); });
 $("#char-cancel").addEventListener("click", () => charDialog.close());
 $("#new-character").addEventListener("click", () => {
   if (!hasKeys("anthropic_api_key", "hf_key_id", "hf_key_secret")) return;
@@ -531,11 +542,13 @@ charForm.addEventListener("submit", async (e) => {
   errBox.hidden = true;
   let request;
   if (f.source.value === "photo") {
-    if (!f.file.files[0]) return fail("Choose a photo of the child.");
-    if (!f.consent.checked) return fail("Confirm you have permission to use this child's likeness.");
+    const kind = f.kind.value, photos = [...f.file.files].slice(0, MAX_PHOTOS);
+    if (!photos.length) return fail(`Choose at least one photo of the ${kind}.`);
+    if (!f.consent.checked) return fail(kind === "child" ? "Confirm you have permission to use this child's likeness." : "Confirm these are photos of you, or that you have this person's permission.");
     const fd = new FormData();
-    fd.append("file", await shrinkImage(f.file.files[0]));
-    fd.append("name", name); fd.append("age", f.age.value.trim()); fd.append("consent", "yes");
+    // Vercel refuses requests over about 4.5 MB, so several photos are shrunk to share that.
+    for (const photo of photos) fd.append("file", await shrinkImage(photo, MAX_UPLOAD_BYTES / photos.length));
+    fd.append("name", name); fd.append("age", f.age.value.trim()); fd.append("kind", kind); fd.append("consent", "yes");
     request = () => api("POST", "/api/characters/from-photo", fd);
   } else {
     const concept = [f.age.value.trim() && `Age ${f.age.value.trim()}.`, f.concept.value.trim()].filter(Boolean).join(" ");
@@ -545,7 +558,7 @@ charForm.addEventListener("submit", async (e) => {
     await busy($("#char-submit"), () => trackLocal("chr:new:create", `Creating ${name}`, request(), { tab: "characters", notifyHere: true }).catch((err) => { fail(err.message); }).then((c) => {
       if (!c) return;
       charDialog.close();
-      toast(`${name} is on the way: the face first, then a full-body photo matched to it.`);
+      toast(`${name} is on the way: the face first, then a full-body photo matched to it. Add a turnaround sheet after for the most consistent scenes.`);
       renderCharacters(); kickActivity();
     }));
   } catch (err) { fail(err.message); }
@@ -704,9 +717,11 @@ function renderProject(p) {
     <div class="steps">
       <span class="step ${plan ? "done" : ""}">1. Song</span>
       <span class="step ${p.song ? "done" : ""}">2. Music</span>
-      <span class="step ${scenes.length && imgs === scenes.length ? "done" : ""}">3. Keyframes ${imgs}/${scenes.length}</span>
-      <span class="step ${scenes.length && vids === scenes.length ? "done" : ""}">4. Animation ${vids}/${scenes.length}</span>
-      <span class="step ${p.final ? "done" : ""}">5. Publish</span>
+      <span class="step ${plan?.choreography ? "done" : ""}">3. Dance</span>
+      <span class="step ${plan?.direction ? "done" : ""}">4. Direction</span>
+      <span class="step ${scenes.length && imgs === scenes.length ? "done" : ""}">5. Keyframes ${imgs}/${scenes.length}</span>
+      <span class="step ${scenes.length && vids === scenes.length ? "done" : ""}">6. Animation ${vids}/${scenes.length}</span>
+      <span class="step ${p.final ? "done" : ""}">7. Publish</span>
     </div>
 
     <section class="panel card">
@@ -731,6 +746,9 @@ function renderProject(p) {
         ${Math.abs(p.song.duration - end) > 1 ? ` <button class="small primary" id="retime">Fit scenes to song</button>` : " ✓ in sync"}</p>`
       : `<p class="muted">Generate the vocals and music from these lyrics, or make the song in Suno or elsewhere and upload it. Scenes can be re-timed to fit.</p>`}
     </section>
+
+    ${choreoPanel(p, lock)}
+    ${directionPanel(p, lock)}
 
     <section class="panel">
       <div class="panel-head"><h2>Scenes</h2>
@@ -779,6 +797,13 @@ function autopilotNext(p) {
   const scenes = p.plan?.scenes || [];
   if (!p.plan) return { step: "write", button: "#write-song" };
   if (!p.song) return { step: "compose", button: "#compose" };
+  if (!p.plan.choreography) return { step: "choreograph", button: "#choreograph" };
+  if (!p.plan.direction) return { step: "direct", button: "#direct" };
+  const locs = p.plan.direction.locations;
+  const failedSet = locs.find((l) => l.error);
+  if (failedSet) return { stop: `The set photo of ${failedSet.name} failed: ${failedSet.error}` };
+  if (locs.some((l) => l.job)) return {};
+  if (locs.some((l) => !l.image)) return { step: "plates", button: "#all-plates" };
   if (scenes.some((s) => s.errors?.image || s.errors?.video)) return { stop: "A scene failed. Fix or redo it, then press Make the whole video again." };
   if (scenes.some((s) => s.jobs?.image || s.jobs?.video) || p.thumb_job) return {};
   if (scenes.some((s) => !s.image)) return { step: "keyframes", button: "#all-images" };
@@ -811,10 +836,52 @@ function toggleAutopilot(p) {
   const count = p.plan?.scenes.length || Math.ceil((+p.brief.length || 150) / 5);
   const left = p.plan ? p.plan.scenes.filter((s) => !s.video).length : count;
   const cost = left * (USD_PER_SCENE[state.settings.video_mode] ?? 0.85) + 1;
-  if (!confirm(`Make everything still missing: song, music, keyframes, animation, thumbnail and final render. This costs about $${Math.round(cost)}. Keep this video open while it runs.`)) return;
+  if (!confirm(`Make everything still missing: song, music, choreography, creative direction, set photos, keyframes, animation, thumbnail and final render. This costs about $${Math.round(cost)}. Keep this video open while it runs.`)) return;
   writeLocal(AUTOPILOT_KEY, p.id);
   renderProject(p);
 }
+
+function choreoPanel(p, lock) {
+  const ch = p.plan.choreography;
+  return `<section class="panel card">
+    <div class="panel-head"><h2>Choreographer</h2>
+      <button class="${ch ? "" : "primary"}" id="choreograph" ${lock("choreograph", "Choreographing…", ch ? "Re-choreograph" : "Choreograph with Claude")}</button></div>
+    ${ch ? `<p>${esc(ch.style)}</p><p class="muted"><b>Formation:</b> ${esc(ch.formation)}</p>
+      <details class="fold" data-fold="${p.id}:moves"><summary>${ch.moves.length} moves · routine by section</summary>
+        <div class="moves">${ch.moves.map((m) => `<div><b>${esc(m.name)}</b> <span class="muted">${esc(m.counts)} · cue: "${esc(m.cue)}"</span><p>${esc(m.steps)}</p></div>`).join("")}</div>
+        <h3>Routine</h3><ul>${ch.sections.map((r) => `<li><b>${esc(r.section)}:</b> ${esc(r.routine)}</li>`).join("")}</ul>
+      </details>`
+    : `<p class="muted">Claude designs a dance kids can copy: named moves, the same routine every chorus, counts for each shot, and a fixed left-to-right formation so the video model never swaps anyone's face.</p>`}
+  </section>`;
+}
+
+function directionPanel(p, lock) {
+  const d = p.plan.direction;
+  const locs = d?.locations || [];
+  const missing = locs.filter((l) => !l.image && !l.job).length;
+  const locCard = (l) => `<div class="card location" data-loc="${esc(l.id)}">
+    <div class="thumb">${l.image ? `<img src="${esc(l.image)}" alt="${esc(l.name)} set photo" loading="lazy">` : l.job ? `<span class="spinner"></span>` : "No set photo yet"}</div>
+    <div class="row between"><h3>${esc(l.name)}</h3><button class="small" data-plate="${esc(l.id)}" ${l.job ? "disabled" : ""}>${l.image ? "Redo photo" : "Set photo"}</button></div>
+    ${l.error ? `<p class="error">${esc(l.error)}</p>` : ""}
+    <label>Set <textarea data-loc-desc rows="6">${esc(l.description)}</textarea></label>
+    <p class="muted">${esc(l.lighting)}</p></div>`;
+  return `<section class="panel card">
+    <div class="panel-head"><h2>Creative director</h2>
+      <div class="row">
+        <button class="${d ? "" : "primary"}" id="direct" ${lock("direct", "Directing…", d ? "Re-direct" : "Direct with Claude")}</button>
+        ${d ? `<button class="${missing ? "primary" : ""}" id="all-plates">${missing ? `Make ${missing} set photo${missing === 1 ? "" : "s"}` : "Set photos made"}</button>` : ""}
+      </div></div>
+    ${d ? `<p>${esc(d.look.style)}</p>
+      <p class="muted"><b>Palette:</b> ${esc(d.look.palette)} · <b>Light:</b> ${esc(d.look.lighting)} · <b>Lens:</b> ${esc(d.look.lens)}</p>
+      <p class="muted"><b>Wardrobe:</b> ${esc(d.look.wardrobe)}</p>
+      <p class="muted"><b>Flow:</b> ${esc(d.flow)}</p>
+      <div class="grid locations">${locs.map(locCard).join("")}</div>
+      <p class="hint">Each set photo is sent with every keyframe shot in that place, so the world looks the same from shot to shot. Make them before the keyframes.</p>`
+    : `<p class="muted">Claude designs the world (2-5 detailed sets, the light, the palette, a wardrobe lock) and breaks every scene down: shot size, lens, the camera move and what happens second by second, who stands where, and the exact first frame. Run the choreographer first so the shots follow the dance.</p>`}
+  </section>`;
+}
+
+function locationName(id) { return state.project?.plan?.direction?.locations.find((l) => l.id === id)?.name || id; }
 
 function sceneCard(s) {
   const jobs = s.jobs || {}, errs = s.errors || {};
@@ -826,13 +893,24 @@ function sceneCard(s) {
     <div class="scene-body">
       <div class="meta"><span>Scene ${s.n} · ${esc(s.section)}</span><span>${fmtTime(s.start)}–${fmtTime(s.end)}</span></div>
       <p class="lyric">${s.sung !== undefined ? (s.sung ? `<span class="sung-label">Sung here:</span> ${esc(s.sung)}` : "<span class='muted'>No words in this part of the song</span>") : esc(s.lyric) || "<span class='muted'>Instrumental</span>"}</p>
-      <div class="chips">${s.cast.map((id) => `<span class="chip">${esc(castName(id))}</span>`).join("")}</div>
+      <div class="chips">${s.cast.map((id) => `<span class="chip">${esc(castName(id))}</span>`).join("")}${s.direction ? `<span class="chip shot">${esc(locationName(s.direction.location))} · ${esc(s.direction.shot_size)}</span>` : ""}</div>
       ${errs.image ? `<p class="error">Keyframe: ${esc(errs.image)}</p>` : ""}${errs.video ? `<p class="error">Video: ${esc(errs.video)}</p>` : ""}
       <div class="row">
         <button class="small" data-act="image" ${jobs.image ? "disabled" : ""}>${jobs.image ? '<span class="spinner"></span> Keyframe' : s.image ? "Redo keyframe" : "Keyframe"}</button>
         <button class="small ${s.image && !s.video ? "primary" : ""}" data-act="video" ${!s.image || jobs.video ? "disabled" : ""}>${jobs.video ? '<span class="spinner"></span> Animating' : s.video ? "Re-animate" : "Animate"}</button>
       </div>
-      <details class="fold" data-fold="scene:${s.n}"><summary>Edit shot</summary>
+      ${s.direction ? `<details class="fold" data-fold="scene:${s.n}:dir"><summary>Director's notes</summary>
+        <p class="muted">${esc(s.direction.shot_size)}, ${esc(s.direction.angle)}, ${esc(s.direction.lens)} · ${esc(s.direction.camera_move)}</p>
+        <label>First frame <textarea data-d="keyframe" rows="4">${esc(s.direction.keyframe)}</textarea></label>
+        <label>Second by second <textarea data-d="beats" rows="4">${esc(s.direction.beats)}</textarea></label>
+        <p class="muted"><b>Blocking:</b> ${esc(s.direction.blocking)}</p>
+        ${s.direction.continuity ? `<p class="muted"><b>Continuity:</b> ${esc(s.direction.continuity)}</p>` : ""}
+      </details>` : ""}
+      ${s.choreo ? `<details class="fold" data-fold="scene:${s.n}:dance"><summary>Dance · ${esc(s.choreo.moves.join(", ") || s.choreo.energy)}</summary>
+        <label>Counts <textarea data-c="counts" rows="3">${esc(s.choreo.counts)}</textarea></label>
+        <p class="muted"><b>Formation:</b> ${esc(s.choreo.formation)}</p>
+      </details>` : ""}
+      <details class="fold" data-fold="scene:${s.n}"><summary>Storyboard</summary>
         <label>Shot <textarea data-k="visual" rows="3">${esc(s.visual)}</textarea></label>
         <label>Action <textarea data-k="action" rows="2">${esc(s.action)}</textarea></label>
       </details>
@@ -849,8 +927,12 @@ function collectPlanEdits() {
     sections: plan.sections.map((s, i) => ({ lyrics: $(`[data-sec="${i}"]`)?.value ?? s.lyrics })),
     scenes: plan.scenes.map((s) => {
       const card = $(`.scene[data-n="${s.n}"]`);
-      return { n: s.n, visual: $("[data-k=visual]", card)?.value ?? s.visual, action: $("[data-k=action]", card)?.value ?? s.action };
+      const edit = { n: s.n, visual: $("[data-k=visual]", card)?.value ?? s.visual, action: $("[data-k=action]", card)?.value ?? s.action };
+      if (s.direction) edit.direction = { keyframe: $("[data-d=keyframe]", card)?.value ?? s.direction.keyframe, beats: $("[data-d=beats]", card)?.value ?? s.direction.beats };
+      if (s.choreo) edit.choreo = { counts: $("[data-c=counts]", card)?.value ?? s.choreo.counts };
+      return edit;
     }),
+    direction: { locations: (plan.direction?.locations || []).map((l) => ({ id: l.id, description: $(`.location[data-loc="${CSS.escape(l.id)}"] [data-loc-desc]`)?.value ?? l.description })) },
   };
 }
 
@@ -946,8 +1028,40 @@ function bindEditor(p) {
     const btn = e.target.closest("button"), n = btn.closest(".scene").dataset.n;
     action(btn, () => api("POST", `/api/projects/${id}/scenes/${n}/${btn.dataset.act}`), ["hf_key_id", "hf_key_secret"]);
   }));
+  $("#choreograph").onclick = (e) => {
+    if (!hasKeys("anthropic_api_key")) return;
+    if (p.plan.choreography && !confirm("Re-choreograph the whole song? Your edits to the dance counts will be replaced.")) return;
+    toast("The choreographer is working (a minute or two). Feel free to keep working; you'll get a notice.");
+    action(e.target, () => api("POST", `/api/projects/${id}/choreograph`), [], { kind: "choreograph", label: "Choreographing the dance" });
+  };
+  $("#direct").onclick = (e) => {
+    if (!hasKeys("anthropic_api_key")) return;
+    if (p.plan.direction && !confirm("Re-direct the whole video? New sets and shot notes replace the current ones; sets that come back unchanged keep their photos.")) return;
+    if (!p.plan.choreography && !confirm("The dance isn't choreographed yet, so the shots won't follow it. Direct anyway?")) return;
+    toast("The creative director is designing the sets and breaking down every shot (two or three minutes). You'll get a notice.");
+    action(e.target, () => api("POST", `/api/projects/${id}/direct`), [], { kind: "direct", label: "Creative direction" });
+  };
+  const plates = $("#all-plates");
+  if (plates) plates.onclick = (e) => platesFor(e.target, p.plan.direction.locations.filter((l) => !l.image && !l.job));
+  $$("[data-plate]").forEach((b) => (b.onclick = (e) => platesFor(e.target, p.plan.direction.locations.filter((l) => l.id === b.dataset.plate))));
   $("#all-images").onclick = (e) => batch(e.target, "image", (s) => !s.image && !s.jobs?.image);
   $("#all-videos").onclick = (e) => batch(e.target, "video", (s) => s.image && !s.video && !s.jobs?.video);
+}
+
+async function platesFor(btn, locs) {
+  if (!hasKeys("hf_key_id", "hf_key_secret")) return;
+  if (!locs.length) { toast("Every set already has its photo."); return; }
+  const pid = state.project.id;
+  autopilot.batching = true;
+  await busy(btn, async () => {
+    await savePlan();
+    for (const l of locs) {
+      try { const p = await queued(() => api("POST", `/api/projects/${pid}/locations/${encodeURIComponent(l.id)}/plate`)); if (viewing(pid)) renderProject(p); }
+      catch (e) { toast(`${l.name}: ${e.message}`, true); break; }
+    }
+    kickActivity();
+  });
+  autopilot.batching = false;
 }
 
 async function batch(btn, kind, want) {

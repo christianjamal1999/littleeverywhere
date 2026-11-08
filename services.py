@@ -75,9 +75,24 @@ NOT ALLOWED
 - Text, logos, watermarks, extra fingers or distorted faces, fused or too many teeth, mismatched eyes or ears."""
 
 
-def style_prefix(settings):
+ADULT_GUIDELINES = """\
+ADULTS IN THE CAST
+- A real adult (a parent, teacher or host) may appear only as the AI version of someone who gave consent in the New
+  Character form: themselves, or with their written permission.
+- They look like real adults with natural skin, modest everyday clothes that fully cover the body, friendly and warm,
+  and they stay the same person with the same face, hair and outfit in every shot."""
+
+
+def is_adult(c):
+    return c.get("kind") == "adult"
+
+
+def style_prefix(settings, cast=()):
     """What every generated image of the cast must follow."""
-    return f"{settings['house_style']}.\n{settings.get('character_guidelines') or CHARACTER_GUIDELINES}\nSCENE: "
+    rules = settings.get('character_guidelines') or CHARACTER_GUIDELINES
+    if any(is_adult(c) for c in cast):
+        rules += "\n" + ADULT_GUIDELINES
+    return f"{settings['house_style']}.\n{rules}\nSCENE: "
 
 
 # ============================================================== spend tracking
@@ -102,6 +117,10 @@ _spend = threading.local()
 def set_spend_project(project_id):
     """The video this request's spending belongs to."""
     _spend.project = project_id
+
+
+def current_spend_project():
+    return getattr(_spend, "project", None)
 
 
 def log_spend(service, what, usd, detail="", project=None, event_id=None):
@@ -274,7 +293,8 @@ def claude_json(settings, system, prompt, schema, what="Claude request"):
 
 
 def character_line(c):
-    return f"{c['name']} (age {c.get('age') or '?'}): {c.get('look', '')}; wearing {c.get('outfit', '')}"
+    who = "an adult, " if is_adult(c) else ""
+    return f"{c['name']} ({who}age {c.get('age') or '?'}): {c.get('look', '')}; wearing {c.get('outfit', '')}"
 
 
 def identity_lock(cast):
@@ -282,7 +302,7 @@ def identity_lock(cast):
     lines = [f"{c['name']}: {c.get('face') or c.get('look', '')}; wearing {c.get('outfit', '')}" for c in cast]
     if not lines:
         return ""
-    return ("IDENTITY LOCK, the most important instruction: each child must be unmistakably the same real child as "
+    return ("IDENTITY LOCK, the most important instruction: each person must be unmistakably the same real person as "
             "in their reference images, pixel-faithful in eye color and shape, eyebrows, nose, ears, lips, teeth, "
             "skin tone, freckles, hair and outfit. Do not beautify, age or restyle them.\n" + "\n".join(lines) + "\n")
 
@@ -549,30 +569,42 @@ Every look and outfit must follow these rules:
     return claude_json(settings, CHANNEL_PLAYBOOK, prompt, CHARACTER_SCHEMA, "Character design")
 
 
-def describe_photo(settings, data, content_type, name, age, existing):
-    """Turn a photo of a consenting family's child into a character sheet. Describes what's visible only."""
-    prompt = f"""A parent or guardian has consented to turning this photo of their child into a character
-for their family channel. Write a character sheet from what you can see. Do not try to work out who the child
-is. Their name is {name}{f" and they are {age}" if age else ""}; use that name and age exactly.
-look: hair, skin tone, build. Keep to what's visible.
+def describe_photo(settings, photos, name, age, kind, existing):
+    """Turn photos of a consenting real person into a character sheet. Describes what's visible only.
+    photos: [(bytes, content_type)], all of the same person."""
+    adult = kind == "adult"
+    if adult:
+        consent = ("This person has consented (or is the creator themselves) to becoming a recurring adult "
+                   "character, such as a parent, teacher or host, on their family channel.")
+    else:
+        consent = ("A parent or guardian has consented to turning their child into a character for their "
+                   "family channel.")
+    prompt = f"""{consent} The {len(photos)} photo{'s are all' if len(photos) > 1 else ' is'} of the same
+person. Write a character sheet from what you can see, so an image model can recreate exactly this person.
+Do not try to work out who they are. Their name is {name}{f" and they are {age}" if age else ""}; use that
+name and age exactly.
+look: hair, skin tone, build, height for their age. Keep to what's visible.
 {FACE_GUIDE}
+Be exhaustive about the face: it's the only way the AI version stays recognizably this person. Where the
+photos disagree (lighting, angle), describe what's true across them.
 outfit: a signature outfit for every video; base it on what they wear here if it's suitable.
-personality, signature and the story fields: warm, simple suggestions the parent can edit, not claims about the child.
+personality, signature and the story fields: warm, simple suggestions the creator can edit, not claims
+about the person.
 {BIBLE_GUIDE}
 Existing cast, for friendships:
 {_cast_summary(existing)}
 
 The character must follow these rules:
-{settings.get('character_guidelines') or CHARACTER_GUIDELINES}"""
+{settings.get('character_guidelines') or CHARACTER_GUIDELINES}
+{ADULT_GUIDELINES if adult else ""}"""
+    images = [{"type": "image", "source": {"type": "base64", "media_type": ctype,
+                                           "data": base64.b64encode(data).decode()}} for data, ctype in photos]
     msg = _claude(
         settings, what="Character from photo",
         output_config={"effort": settings.get("claude_effort") or "high",
                        "format": {"type": "json_schema", "schema": CHARACTER_SCHEMA}},
         system=CHANNEL_PLAYBOOK,
-        messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": content_type,
-                                         "data": base64.b64encode(data).decode()}},
-            {"type": "text", "text": prompt}]}],
+        messages=[{"role": "user", "content": images + [{"type": "text", "text": prompt}]}],
     )
     return json.loads(next(b.text for b in msg.content if b.type == "text"))
 
@@ -741,6 +773,8 @@ def cast_lineup(settings, cast):
 def cast_refs(settings, cast, per_character=2, max_refs=MAX_SEPARATE_REFS):
     """Reference image URLs for a cast, plus prompt lines saying who is in which image."""
     cast = [c for c in cast if c.get("images")]
+    if per_character > 1 and sum(min(per_character, len(c["images"])) for c in cast) > max_refs:
+        per_character = 1  # one sharp face each holds a likeness better than a small face in a lineup
     if sum(min(per_character, len(c["images"])) for c in cast) <= max_refs:
         refs, legend = [], []
         for c in cast:
@@ -756,31 +790,63 @@ def cast_refs(settings, cast, per_character=2, max_refs=MAX_SEPARATE_REFS):
         f"reference image 1 is a lineup of the {len(cast)} characters, {order}: {who}"]
 
 
-def character_prompt(settings, c, shot="headshot", from_photo=False):
-    """headshot: the master reference for the face. body and sheet are matched to reference image 1."""
-    base = f"{style_prefix(settings)}{identity_lock([c])}Photo of {character_line(c)}. "
-    if from_photo:
-        base += ("Reference image 1 is a photo of this child. Make a new photo of the same child, keeping every "
-                 "facial feature exactly, with new clothes, background and lighting. ")
+def character_prompt(settings, c, shot="headshot", photos=0):
+    """headshot: the master reference for the face. body and sheet are matched to reference image 1.
+    photos: how many photos of the real person come first in the references, for their AI version."""
+    who = "person" if is_adult(c) else "child"
+    base = f"{style_prefix(settings, [c])}{identity_lock([c])}Photo of {character_line(c)}. "
+    if photos:
+        refs = "Reference image 1 is a photo" if photos == 1 else f"Reference images 1-{photos} are photos"
+        base += (f"{refs} of this real {who}. Make a new photo of the very same {who}: an exact likeness that "
+                 "their family would recognize instantly, keeping the face shape, eyes, eyebrows, nose, ears, "
+                 "mouth, teeth, skin tone, freckles, marks and hair exactly as in the photos, at the same age. "
+                 "Do not beautify, slim, smooth or restyle them. Only the clothes, background and lighting are "
+                 "new. ")
     if shot == "sheet":
         return (base + "Turnaround sheet on a clean white background: front, three-quarter and side views plus "
-                "three expressions (happy, surprised, giggling), both ears visible in the side view, identical "
+                "three expressions (happy, surprised, laughing), both ears visible in the side view, identical "
                 "face, outfit and proportions in every view. Match reference image 1 exactly. No text.")
     if shot == "body":
         return (base + "Full-body photo, friendly natural pose, softly blurred sunny outdoor background, centered, "
-                "the exact same child as reference image 1. No text.")
+                f"the exact same {who} as reference image 1. No text.")
     return (base + "Head and shoulders portrait, facing the camera straight on, eyes open and looking into the lens, "
             "a natural open-mouth smile showing the teeth, both ears visible, hair clear of the face, even soft "
             "daylight, plain softly blurred background, tack-sharp focus on the face. No text.")
 
 
-def scene_image_prompt(settings, scene, cast):
-    refs, legend = cast_refs(settings, cast)
+def _direction_text(scene, look):
+    """The creative director's breakdown of this shot, for the keyframe."""
+    d = scene["direction"]
+    parts = [f"FIRST FRAME: {d['keyframe']}",
+             f"Shot: {d['shot_size']}, {d['angle']}, {d['lens']}.",
+             f"Blocking: {d['blocking']}", f"Lighting: {d['lighting']}"]
+    if look:
+        parts.append(f"Look: {look['style']} Palette: {look['palette']} Wardrobe: {look['wardrobe']}")
+    if d.get("continuity"):
+        parts.append(f"Continuity: {d['continuity']}")
+    return " ".join(parts) + " "
+
+
+def scene_image_prompt(settings, scene, cast, look=None, location=None):
+    """The keyframe's prompt and references. With the creative director's notes, the shot follows them,
+    and the location's set photo (if it has one) is the last reference so every shot there matches it."""
+    plate = (location or {}).get("image")
+    refs, legend = cast_refs(settings, cast, max_refs=MAX_SEPARATE_REFS - 1 if plate else MAX_SEPARATE_REFS)
+    if plate:
+        refs = refs + [plate]
+        legend.append(f"reference image {len(refs)} is the empty set of {location['name']}: put the scene in "
+                      "exactly this place, with the same landmarks, materials, colors and light")
     who = "; ".join(legend)
     framing = ("Medium close-up with the singers' faces large and sharp, facing the camera, mouths clearly visible"
                if scene.get("singers") else "Cinematic shot with every face clearly visible and in focus")
-    prompt = (f"{style_prefix(settings)}{identity_lock(cast)}{scene['visual']} Action: {scene['action']}. "
-              + (f"Characters: {who}. " if who else "")
+    if scene.get("direction"):
+        shot = _direction_text(scene, look)
+        if location:
+            shot += f"SET: {location['name']}: {location['description']} "
+    else:
+        shot = f"{scene['visual']} Action: {scene['action']}. "
+    prompt = (f"{style_prefix(settings, cast)}{identity_lock(cast)}{shot}"
+              + (f"References: {who}. " if who else "")
               + f"{framing}, no text, no watermark.")
     return prompt, refs
 
@@ -823,7 +889,7 @@ def intro_clip_job(settings, canvas_url):
 KEEP_IDENTITY = ("Animate exactly what is in this image. Every person stays the same person with the same eyes, "
                  "eyebrows, nose, ears, teeth, hair and outfit, and every animal stays the same animal from the first "
                  "frame to the last: nothing morphs or transforms, and no new characters appear. Stay in this same "
-                 "shot with no cuts and no big zooms.")
+                 "shot with no cuts; the camera makes only the one smooth move described, never a big zoom.")
 LIVELY = ("Live-action footage at real-time speed, never slow motion. The children have the quick, slightly messy "
           "energy of real kids: fast head bobs and shoulder bounces, knees bending, weight shifting, arms swinging, "
           "natural blinking, eyes darting and changing expressions.")
@@ -843,6 +909,20 @@ def _sung_direction(scene, cast):
             f'"{words}". Anyone else keeps their mouth closed or smiling.')
 
 
+def _shot_motion(scene):
+    """What happens in the shot: the creative director's beats and the choreography when there are some,
+    otherwise the storyboard's action and camera."""
+    d, ch = scene.get("direction"), scene.get("choreo")
+    if not d:
+        dance = f" Choreography by the count: {ch['counts']}" if ch else ""
+        return f"{scene['action']}.{dance} Camera: {scene['camera']}."
+    text = (f"Beat by beat: {d['beats']} Camera: {d['camera_move']} ({d['shot_size']}, {d['angle']}). "
+            f"Blocking: {d['blocking']}.")
+    if ch:
+        text += f" Choreography by the count: {ch['counts']} Formation: {ch['formation']}."
+    return text
+
+
 def _clip_length(dur, choices):
     """The shortest clip the model offers that covers the scene."""
     return next((c for c in choices if dur <= c + 0.5), choices[-1])
@@ -855,8 +935,7 @@ def video_job(settings, scene, cast, audio_url=None, bpm=None):
         mode = "wan_i2v" if audio_url else "kling_i2v"
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""
-    motion = (f"{KEEP_IDENTITY} {LIVELY} {tempo}{scene['action']}. {habits} {_sung_direction(scene, cast)} "
-              f"Camera: {scene['camera']}. No text or subtitles.")
+    motion = f"{KEEP_IDENTITY} {LIVELY} {tempo}{_shot_motion(scene)} {habits} {_sung_direction(scene, cast)} No text or subtitles."
     if len(cast) >= 3:
         # Video models mix up characters that cross paths, so a group stays put.
         motion += (" Everyone dances on their own spot and stays in the same left-to-right order: "

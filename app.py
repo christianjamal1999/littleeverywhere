@@ -9,6 +9,7 @@ import time
 
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 
+import direction as dr
 import services as sv
 import store
 import vault
@@ -216,17 +217,25 @@ def advance_character(s, c):
         update_doc("characters", c["id"], queue_body)
 
 
+def _locations(p):
+    return ((p.get("plan") or {}).get("direction") or {}).get("locations", [])
+
+
 def advance_project(s, p, budget):
     """Collect finished Higgsfield jobs (up to budget[0]) and apply them to the latest project."""
     pid, results = p["id"], []
     pending = [("thumb", None, p.get("thumb_job"))] + [
+        ("plate", loc["id"], loc.get("job")) for loc in _locations(p)] + [
         (kind, sc["n"], job) for sc in (p.get("plan") or {}).get("scenes", [])
         for kind, job in (sc.get("jobs") or {}).items()]
     for kind, n, job in pending:
         if not job or budget[0] <= 0:
             continue
-        prefix = f"projects/{pid}/thumb" if kind == "thumb" else f"projects/{pid}/scene{n}-{kind}"
-        what = "Thumbnail" if kind == "thumb" else f"{'Keyframe' if kind == 'image' else 'Animation'}, scene {n}"
+        if kind == "plate":
+            prefix, what = f"projects/{pid}/set-{n}", f"Set photo, {n}"
+        else:
+            prefix = f"projects/{pid}/thumb" if kind == "thumb" else f"projects/{pid}/scene{n}-{kind}"
+            what = "Thumbnail" if kind == "thumb" else f"{'Keyframe' if kind == 'image' else 'Animation'}, scene {n}"
         done, url, err = collect_output(s, job, prefix, what, pid)
         if done:
             results.append((kind, n, job["request_id"], url, err))
@@ -247,6 +256,17 @@ def advance_project(s, p, budget):
                     stale.append(q.get("thumbnail"))
                     q["thumbnail"] = url
                 add_event(q, "Thumbnail", ok=bool(url), error=err, kind="thumb")
+                continue
+            if kind == "plate":
+                loc = dr.location(q.get("plan") or {}, n)
+                if not loc or (loc.get("job") or {}).get("request_id") != rid:
+                    stale.append(url)
+                    continue
+                loc["job"], loc["error"] = None, err
+                if url:
+                    stale.append(loc.get("image"))
+                    loc["image"] = url
+                add_event(q, f"Set photo of {loc['name']}", ok=bool(url), error=err, kind="plate")
                 continue
             sc = scenes.get(n)
             if not sc or ((sc.get("jobs") or {}).get(kind) or {}).get("request_id") != rid:
@@ -440,6 +460,8 @@ def characters_update(cid):
     c = load_or_404("characters", cid)
     data = body()
     c.update({k: str(data[k]).strip() for k in CHAR_FIELDS if k in data})
+    if data.get("kind") in KINDS:
+        c["kind"] = data["kind"]
     if "images" in data:  # reorder / remove; only URLs already on the character
         keep = [u for u in data["images"] if u in c["images"]]
         store.delete_media([u for u in c["images"] if u not in keep])
@@ -487,29 +509,41 @@ def characters_describe():
 
 
 PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp")
+MAX_PHOTOS = 4
+KINDS = ("child", "adult")
 
 
 @app.post("/api/characters/from-photo")
 def characters_from_photo():
-    """New character from a photo of a real child, with their guardian's consent.
-    The photo is only used for this one generation and is never saved in our storage."""
+    """New character: the AI version of a real person, with their consent (a child's parent or guardian's).
+    Up to four photos of the same person; more angles give a closer likeness. The photos are only used for
+    this one generation and are never saved in our storage."""
     s = settings()
     name, age = request.form.get("name", "").strip(), request.form.get("age", "").strip()
+    kind = request.form.get("kind", "child")
+    if kind not in KINDS:
+        raise sv.UserError("Say whether the photos show a child or an adult.")
     if request.form.get("consent") != "yes":
-        raise sv.UserError("Confirm you're the child's parent or guardian, or have their permission.")
+        raise sv.UserError("Confirm you're the child's parent or guardian, or have their permission."
+                           if kind == "child" else "Confirm this is you, or that you have this person's permission.")
     if not name:
         raise sv.UserError("Give the character a name.")
-    f = request.files.get("file")
-    if not f or f.mimetype not in PHOTO_TYPES:
-        raise sv.UserError("Upload a JPG, PNG or WEBP photo.")
+    files = request.files.getlist("file")
+    if not files:
+        raise sv.UserError("Upload at least one photo.")
+    if len(files) > MAX_PHOTOS:
+        raise sv.UserError(f"Upload at most {MAX_PHOTOS} photos.")
+    if any(f.mimetype not in PHOTO_TYPES for f in files):
+        raise sv.UserError("Upload JPG, PNG or WEBP photos.")
     sv.need(s, "hf_key_id", "hf_key_secret")
-    photo = f.read()
-    fields = sv.describe_photo(s, photo, f.mimetype, name, age, store.list_docs("characters"))
+    photos = [(f.read(), f.mimetype) for f in files]
+    fields = sv.describe_photo(s, photos, name, age, kind, store.list_docs("characters"))
     fields.update(name=name, age=age or fields.get("age", ""))
-    reference = sv.hf_upload(s, photo, f.mimetype)
-    job = sv.image_job(s, sv.character_prompt(s, fields, from_photo=True), [reference], "3:4", best=True)
-    consent = {"given": True, "at": store.now()}
-    return jsonify(_new_character(fields, job, {"source": "photo", "consent": consent}))
+    refs = [sv.hf_upload(s, data, ctype) for data, ctype in photos]
+    job = sv.image_job(s, sv.character_prompt(s, {**fields, "kind": kind}, photos=len(refs)), refs, "3:4",
+                       best=True)
+    consent = {"given": True, "at": store.now(), "by": "guardian" if kind == "child" else "self or permission"}
+    return jsonify(_new_character(fields, job, {"source": "photo", "kind": kind, "consent": consent}))
 
 
 @app.post("/api/characters/<cid>/bible")
@@ -591,7 +625,8 @@ def activity():
             p = update_doc("projects", p["id"], lambda q: (q.pop("task", None), add_event(
                 q, label, False, "It stopped before finishing (it may have hit the server's "
                 "5-minute limit). Try again.", task["kind"])))
-        has_jobs = p.get("thumb_job") or any(sc.get("jobs") for sc in (p.get("plan") or {}).get("scenes", []))
+        has_jobs = (p.get("thumb_job") or any(loc.get("job") for loc in _locations(p))
+                    or any(sc.get("jobs") for sc in (p.get("plan") or {}).get("scenes", [])))
         if has_jobs and can_poll and budget[0] > 0:
             try:
                 advance_project(s, p, budget)
@@ -607,6 +642,10 @@ def activity():
         if p.get("thumb_job"):
             running.append({**base, "key": f"prj:{p['id']}:thumb", "label": "Thumbnail",
                             "started": p["thumb_job"].get("submitted")})
+        for loc in _locations(p):
+            if loc.get("job"):
+                running.append({**base, "key": f"prj:{p['id']}:plate:{loc['id']}",
+                                "label": f"Set photo of {loc['name']}", "started": loc["job"].get("submitted")})
         for sc in (p.get("plan") or {}).get("scenes", []):
             for kind, job in (sc.get("jobs") or {}).items():
                 what = "Keyframe" if kind == "image" else "Animation"
@@ -675,7 +714,7 @@ def projects_list():
         plan = p.get("plan") or {}
         thumb = p.get("thumbnail") or next(
             (sc.get("image") for sc in plan.get("scenes", []) if sc.get("image")), None)
-        busy = (bool(task_running(p)) + bool(p.get("thumb_job"))
+        busy = (bool(task_running(p)) + bool(p.get("thumb_job")) + sum(bool(loc.get("job")) for loc in _locations(p))
                 + sum(len(sc.get("jobs") or {}) for sc in plan.get("scenes", [])))
         out.append({"id": p["id"], "title": plan.get("title") or p["brief"].get("topic"),
                     "created": p["created"], "thumb": thumb, "final": bool(p.get("final")),
@@ -719,6 +758,13 @@ def projects_update(pid):
             for k in ("lyric", "visual", "action", "camera", "cast"):
                 if k in new:
                     sc[k] = new[k]
+            for group, keys in (("direction", ("keyframe", "beats")), ("choreo", ("counts",))):
+                if sc.get(group) and isinstance(new.get(group), dict):
+                    sc[group].update({k: str(new[group][k]) for k in keys if k in new[group]})
+        for loc in (incoming.get("direction") or {}).get("locations", []):
+            target = dr.location(p["plan"], loc.get("id"))
+            if target and "description" in loc:
+                target["description"] = str(loc["description"])
     return jsonify(store.save_doc("projects", p))
 
 
@@ -728,6 +774,7 @@ def projects_delete(pid):
     urls = [p.get("thumbnail"), p.get("final"), (p.get("song") or {}).get("url")]
     for sc in (p.get("plan") or {}).get("scenes", []):
         urls += [sc.get("image"), sc.get("video")]
+    urls += [loc.get("image") for loc in ((p.get("plan") or {}).get("direction") or {}).get("locations", [])]
     store.delete_media(urls)
     store.delete_doc("projects", pid)
     return jsonify(ok=True)
@@ -744,6 +791,73 @@ def projects_write(pid):
             q["plan"], q["final"] = plan, None
         return apply
     return jsonify(run_project_task(pid, "write", "Writing song & storyboard", work))
+
+
+def _cast_of(p):
+    return cast_for(p["brief"].get("cast", []))
+
+
+@app.post("/api/projects/<pid>/choreograph")
+def projects_choreograph(pid):
+    s = settings()
+
+    def work(p):
+        if not p.get("plan"):
+            raise sv.UserError("Write the song first.")
+        plan = dr.choreograph(s, p["plan"], _cast_of(p), p["brief"])
+        moves = {sc["n"]: sc.get("choreo") for sc in plan["scenes"]}
+
+        def apply(q):
+            q["plan"]["choreography"] = plan["choreography"]
+            for sc in q["plan"]["scenes"]:
+                if moves.get(sc["n"]):
+                    sc["choreo"] = moves[sc["n"]]
+        return apply
+    return jsonify(run_project_task(pid, "choreograph", "Choreographing the dance", work))
+
+
+@app.post("/api/projects/<pid>/direct")
+def projects_direct(pid):
+    s = settings()
+
+    def work(p):
+        if not p.get("plan"):
+            raise sv.UserError("Write the song first.")
+        plan = dr.direct(s, p["plan"], _cast_of(p), p["brief"])
+        shots = {sc["n"]: sc.get("direction") for sc in plan["scenes"]}
+
+        def apply(q):
+            # A set that comes back unchanged keeps its photo (or the one being made); the rest are dropped.
+            old = {loc["id"]: loc for loc in (q["plan"].get("direction") or {}).get("locations", [])}
+            world = plan["direction"]
+            for loc in world["locations"]:
+                prev = old.pop(loc["id"], None)
+                if prev and prev.get("description") == loc["description"]:
+                    loc.update({k: prev[k] for k in ("image", "job") if prev.get(k)})
+                elif prev:
+                    store.delete_media([prev.get("image")])
+            store.delete_media([loc.get("image") for loc in old.values()])
+            q["plan"]["direction"] = world
+            for sc in q["plan"]["scenes"]:
+                if shots.get(sc["n"]):
+                    sc["direction"] = shots[sc["n"]]
+        return apply
+    return jsonify(run_project_task(pid, "direct", "Creative direction", work))
+
+
+@app.post("/api/projects/<pid>/locations/<lid>/plate")
+def location_plate(pid, lid):
+    """The empty set photo of one location, used as a reference in every keyframe shot there."""
+    s = settings()
+    p = load_or_404("projects", pid)
+    loc = dr.location(p.get("plan") or {}, lid) or abort(404, "Location not found")
+    job = sv.image_job(s, dr.plate_prompt(s, p["plan"], loc), [], s["aspect_ratio"], best=True)
+
+    def apply(q):
+        target = dr.location(q.get("plan") or {}, lid) or abort(404, "Location not found")
+        target["job"] = job
+        target.pop("error", None)
+    return jsonify(update_doc("projects", pid, apply))
 
 
 def _song_record(pid, data, source, ext):
@@ -844,8 +958,11 @@ def _set_scene_job(pid, n, kind, job):
 @app.post("/api/projects/<pid>/scenes/<int:n>/image")
 def scene_image(pid, n):
     s = settings()
-    sc = _scene(load_or_404("projects", pid), n)
-    prompt, refs = sv.scene_image_prompt(s, sc, cast_for(sc["cast"]))
+    p = load_or_404("projects", pid)
+    sc = _scene(p, n)
+    look = (p["plan"].get("direction") or {}).get("look")
+    where = dr.location(p["plan"], (sc.get("direction") or {}).get("location"))
+    prompt, refs = sv.scene_image_prompt(s, sc, cast_for(sc["cast"]), look, where)
     return jsonify(_set_scene_job(pid, n, "image", sv.image_job(s, prompt, refs, s["aspect_ratio"])))
 
 
@@ -879,7 +996,7 @@ def projects_thumbnail(pid):
     plan = p.get("plan") or abort(400, "Write the song first.")
     cast = cast_for(p["brief"].get("cast", []))
     refs, legend = sv.cast_refs(s, cast, per_character=1)
-    prompt = (f"{sv.style_prefix(s)}YouTube thumbnail for a kids' music video: "
+    prompt = (f"{sv.style_prefix(s, cast)}YouTube thumbnail for a kids' music video: "
               f"{plan['thumbnail_prompt']} " + (f"Characters: {'; '.join(legend)}. " if legend else "")
               + f"Big bold rounded playful title text reading \"{plan['thumbnail_text']}\", "
               "high contrast, very readable at small size.")

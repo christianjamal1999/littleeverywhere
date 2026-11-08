@@ -293,3 +293,15 @@ table.data td .muted { font-size: 12px; }
   .step:first-child { border-top: 0; }
   #toast { left: 50%; }
 }
+
+/* creative director and choreographer */
+.locations { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-top: 12px; }
+.location { padding: 12px; }
+.location .thumb { border-radius: var(--radius-sm); margin-bottom: 8px; }
+.location h3 { margin: 0; font-size: 15px; }
+.location textarea { font-size: 13px; }
+.moves { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 16px; margin: 8px 0; }
+.moves p { margin: 4px 0 0; font-size: 13px; }
+.chip.shot { background: var(--sunken); }
+.photo-previews { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.photo-previews img { height: 84px; aspect-ratio: 3/4; object-fit: cover; border-radius: var(--radius-sm); }
