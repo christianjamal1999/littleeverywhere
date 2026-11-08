@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KidSong Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23e8553a'/%3E%3Cpath d='M6.5 11.5V5l5-1v6' fill='none' stroke='%23fff' stroke-width='1.3'/%3E%3Ccircle cx='5' cy='11.5' r='1.6' fill='%23fff'/%3E%3Ccircle cx='10' cy='10' r='1.6' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12V3.5l7-1.5v8"/><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="11" cy="10" r="2" fill="currentColor"/></svg></span><span>KidSong Studio</span></div>
+  <nav id="tabs">
+    <button data-tab="dashboard"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="7" rx="1"/><rect x="9" y="1.5" width="5.5" height="4" rx="1"/><rect x="9" y="7.5" width="5.5" height="7" rx="1"/><rect x="1.5" y="10.5" width="5.5" height="4" rx="1"/></svg>Dashboard</button>
+    <button data-tab="studio" class="active"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M6.5 6v4l3.5-2z"/></svg>Studio</button>
+    <button data-tab="characters"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.4-2.6 2.2-4 4.5-4s4.1 1.4 4.5 4"/><path d="M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 9.8c1.4.5 2.3 1.9 2.5 3.7"/></svg>Characters</button>
+    <button data-tab="ideas"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5a4.5 4.5 0 0 0-2.5 8.2V11h5V9.7A4.5 4.5 0 0 0 8 1.5z"/><path d="M6 13.5h4"/></svg>Ideas</button>
+    <button data-tab="settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5h7M12.5 4.5H14M2 11.5h1.5M7 11.5h7"/><circle cx="10.75" cy="4.5" r="1.75"/><circle cx="5.25" cy="11.5" r="1.75"/></svg>Settings</button>
+  </nav>
+  <div class="activity">
+    <button id="activity-btn" class="small" hidden aria-haspopup="true" aria-expanded="false"></button>
+    <div id="activity-panel" class="card" hidden></div>
+  </div>
+</header>
+
+<main>
+  <!-- ======================= DASHBOARD ======================= -->
+  <section id="tab-dashboard" class="tab">
+    <div class="row between page-head">
+      <div>
+        <h1>Dashboard</h1>
+        <p class="muted">What each API key is costing you.</p>
+      </div>
+      <select id="spend-range" aria-label="Time range">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="">All time</option>
+      </select>
+    </div>
+    <div id="spend"></div>
+  </section>
+
+  <!-- ======================= STUDIO ======================= -->
+  <section id="tab-studio" class="tab active">
+    <div id="studio-list">
+      <div class="row between">
+        <h1>Your videos</h1>
+        <button class="primary" id="new-video">+ New video</button>
+      </div>
+      <div id="projects" class="grid cards"></div>
+    </div>
+    <div id="studio-editor" hidden></div>
+  </section>
+
+  <!-- ======================= CHARACTERS ======================= -->
+  <section id="tab-characters" class="tab">
+    <div class="row between">
+      <div>
+        <h1>Cast</h1>
+        <p class="muted">Recurring characters. Their reference images go into every image and video so they look the same across episodes.</p>
+      </div>
+      <div class="row">
+        <button class="ghost danger" id="clear-cast">Remove all</button>
+        <button class="primary" id="new-character">+ New character</button>
+      </div>
+    </div>
+    <div id="characters" class="grid chars"></div>
+  </section>
+
+  <!-- ======================= IDEAS ======================= -->
+  <section id="tab-ideas" class="tab">
+    <h1>Video ideas</h1>
+    <p class="muted">Claude suggests topics based on what's working for kids' music channels right now. Pick one to start a video.</p>
+    <div class="row">
+      <input id="idea-focus" placeholder="Optional focus, e.g. 'winter + animals' or 'emotions for toddlers'">
+      <button class="primary" id="get-ideas">Brainstorm</button>
+    </div>
+    <label class="check"><input type="checkbox" id="idea-research" checked> Research live trends first: Claude searches the web for what's working right now, including competitors' latest uploads (slower; uses web search)</label>
+    <div id="research"></div>
+    <div id="ideas" class="grid ideas"></div>
+  </section>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <section id="tab-settings" class="tab">
+    <h1>Settings</h1>
+    <p class="muted" id="storage-note"></p>
+    <div class="row"><button type="button" class="small" data-test="renderer">Check server</button><span class="test-result" data-for="renderer"></span></div>
+    <form id="settings-form" class="settings">
+      <fieldset id="password-box" hidden>
+        <legend>App password</legend>
+        <label>Password <input type="password" name="app_password" autocomplete="current-password"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Anthropic (songwriting &amp; storyboards)</legend>
+        <label>API key <input type="password" name="anthropic_api_key" placeholder="sk-ant-..." autocomplete="off"></label>
+        <div class="two">
+          <label>Model
+            <select name="claude_model">
+              <option value="claude-opus-5-5">Claude Opus 5.5 (best)</option>
+              <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (faster, cheaper)</option>
+              <option value="claude-haiku-5-5">Claude Haiku 5.5 (cheapest)</option>
+              <option value="claude-fable-5-1">Claude Fable 5.1 (most capable)</option>
+            </select>
+          </label>
+          <label>Effort
+            <select name="claude_effort">
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+            </select>
+          </label>
+        </div>
+        <div class="row"><button type="button" class="small" data-test="anthropic">Test connection</button><span class="test-result" data-for="anthropic"></span></div>
+      </fieldset>
+      <fieldset>
+        <legend>Higgsfield (images &amp; video)</legend>
+        <div class="two">
+          <label>API key ID <input type="password" name="hf_key_id" autocomplete="off"></label>
+          <label>API key secret <input type="password" name="hf_key_secret" autocomplete="off"></label>
+        </div>
+        <p class="hint">Create a key at <a href="https://console.higgsfield.ai" target="_blank" rel="noopener">console.higgsfield.ai</a>.</p>
+        <div class="row"><button type="button" class="small" data-test="higgsfield">Test connection</button><span class="test-result" data-for="higgsfield"></span></div>
+        <div class="two">
+          <label>Animation model
+            <select name="video_mode">
+              <option value="lipsync">Lip-sync: Wan hears the song on sung scenes, Kling for the rest</option>
+              <option value="kling_i2v">Kling 2.5 Turbo (cheapest, no lip-sync)</option>
+              <option value="ltx_fast">LTX 2.5 Fast</option>
+              <option value="wan_i2v">Wan 2.6 (moves to the song)</option>
+              <option value="seedance_ref">Seedance 2.0 (moves to the song)</option>
+            </select>
+          </label>
+          <label>Resolution
+            <select name="video_resolution">
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p (drafts)</option>
+            </select>
+          </label>
+        </div>
+        <div class="two">
+          <label>Keyframe resolution
+            <select name="image_resolution">
+              <option value="1k">1K</option>
+              <option value="2k">2K</option>
+            </select>
+          </label>
+          <label>Keyframe quality
+            <select name="image_quality">
+              <option value="low">Low (cheaper)</option>
+              <option value="medium">Medium</option>
+            </select>
+          </label>
+        </div>
+        <div class="two">
+          <label>Format
+            <select name="aspect_ratio">
+              <option value="16:9">16:9 YouTube video</option>
+              <option value="9:16">9:16 Shorts / TikTok</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" name="sing_along_audio"> Send each scene's part of the song to the model so characters move to the music (Wan and Seedance only)</label>
+        </div>
+        <details>
+          <summary>Advanced: model endpoints</summary>
+          <label>Image endpoint <input name="image_endpoint"></label>
+          <label>Seedance endpoint <input name="seedance_endpoint"></label>
+          <label>Kling endpoint <input name="kling_endpoint"></label>
+          <label>Wan endpoint <input name="wan_endpoint"></label>
+          <label>LTX endpoint <input name="ltx_endpoint"></label>
+        </details>
+      </fieldset>
+      <fieldset>
+        <legend>Costs</legend>
+        <p class="hint">Asks Higgsfield what each option costs on your account (checking is free). Failed generations aren't charged.</p>
+        <div class="row"><button type="button" class="small" id="check-prices">Check prices</button><button type="button" class="small primary" id="use-cheapest" hidden>Use the cheapest options</button></div>
+        <div id="prices"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Music (optional)</legend>
+        <label>ElevenLabs API key <input type="password" name="elevenlabs_api_key" autocomplete="off"></label>
+        <p class="hint">Claude writes the lyrics; ElevenLabs Music sings them. Or skip this and upload an MP3 from Suno or any other tool.</p>
+        <label>Music model
+          <select name="music_model"><option value="music_v2_5">music_v2_5</option><option value="music_v2">music_v2</option></select>
+        </label>
+        <div class="row"><button type="button" class="small" data-test="elevenlabs">Test connection</button><span class="test-result" data-for="elevenlabs"></span></div>
+      </fieldset>
+      <fieldset>
+        <legend>Channel</legend>
+        <label>Channel name <input name="channel_name"></label>
+        <div class="channel-brand">
+          <div class="channel-icon" id="channel-icon"></div>
+          <div>
+            <h3>Channel icon and intro</h3>
+            <p class="hint">The icon is for your YouTube channel. Its animation opens every video as a quick intro.</p>
+            <div class="row">
+              <button type="button" class="small" id="make-icon">Generate icon</button>
+              <button type="button" class="small" id="make-intro">Animate intro</button>
+              <a class="btn-like small" id="icon-download" download hidden>Download icon</a>
+            </div>
+            <p class="error" id="channel-error" hidden></p>
+          </div>
+        </div>
+        <div class="intro-preview" id="intro-preview" hidden></div>
+        <label>House visual style (added to every image prompt)
+          <textarea name="house_style" rows="3"></textarea>
+        </label>
+        <label>Character guidelines (what's allowed and not allowed in every image of your cast)
+          <textarea name="character_guidelines" rows="16"></textarea>
+        </label>
+      </fieldset>
+      <div class="row">
+        <button class="primary" type="submit">Save settings</button>
+        <span class="muted">Saved to your account, encrypted, so they work on any device. Saved keys are never shown again; leave a key field blank to keep it.</span>
+      </div>
+    </form>
+  </section>
+</main>
+
+<dialog id="char-dialog" class="card">
+  <form id="char-form" method="dialog">
+    <h2>New character</h2>
+    <div class="source-pick" role="radiogroup" aria-label="How to make this character">
+      <label><input type="radio" name="source" value="describe" checked> Describe them</label>
+      <label><input type="radio" name="source" value="photo"> From a photo</label>
+    </div>
+    <div class="two">
+      <label>Name <input name="name" required autocomplete="off"></label>
+      <label>Age <input name="age" placeholder="e.g. 5" autocomplete="off"></label>
+    </div>
+    <div data-source="describe">
+      <label>What are you looking for?
+        <textarea name="concept" rows="4" placeholder="e.g. a curious 5-year-old girl with curly red hair, missing a front tooth, loves frogs, yellow rain boots"></textarea>
+      </label>
+    </div>
+    <div data-source="photo" hidden>
+      <label>Photo of the child <input type="file" name="file" accept="image/png,image/jpeg,image/webp"></label>
+      <p class="hint">A clear, well-lit photo facing the camera, with both ears and a smile, works best. It's used for this one generation and isn't saved here. It is sent to Anthropic and Higgsfield to make the character.</p>
+      <label class="check"><input type="checkbox" name="consent" value="yes"> I'm this child's parent or legal guardian, or I have their written permission to create an AI version of the child and publish it.</label>
+    </div>
+    <p class="error" id="char-error" hidden></p>
+    <div class="row between">
+      <span class="muted">Takes about a minute, about 20¢.</span>
+      <div class="row">
+        <button type="button" class="ghost" id="char-cancel">Cancel</button>
+        <button type="submit" class="primary" id="char-submit">Create character</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<div id="notices" aria-live="polite"></div>
+<div id="toast" hidden></div>
+<template id="tpl-busy"><span class="spinner"></span></template>
+<script src="/app.js"></script>
+</body>
+</html>

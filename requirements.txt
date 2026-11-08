@@ -1,0 +1,5 @@
+anthropic>=0.125.0
+flask>=3.0
+requests>=2.31
+imageio-ffmpeg>=0.6.0
+cryptography>=42
