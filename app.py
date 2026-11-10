@@ -7,6 +7,7 @@ import hmac
 import os
 import time
 
+import requests
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 
 import direction as dr
@@ -332,7 +333,7 @@ def channel_doc():
         "app_settings", {"id": CHANNEL_ID, "created": store.now()})
 
 
-CHANNEL_JOBS = {"icon": "Channel icon", "clip": "Channel intro animation"}
+CHANNEL_JOBS = {"icon": "Channel icon", "clip": "Channel intro animation", "banner": "Channel banner"}
 
 
 def advance_channel(s, ch):
@@ -342,6 +343,24 @@ def advance_channel(s, ch):
             continue
         done, url, err = collect_output(s, job, f"channel/{kind}", label)
         if not done:
+            continue
+        if kind == "banner":
+            if url:  # resized to YouTube's exact banner size
+                try:
+                    sized = store.put_file("channel/banner.jpg", sv.banner_file(url), "image/jpeg")
+                    store.delete_media([url])
+                    url = sized
+                except RuntimeError as e:
+                    store.delete_media([url])
+                    url, err = None, str(e)
+
+            def apply_banner(q):
+                q["banner_job"], q["banner_error"] = None, err
+                if url:
+                    store.delete_media([q.get("banner")])
+                    q["banner"] = url
+                add_event(q, label, ok=bool(url), error=err, kind=kind)
+            update_doc("app_settings", CHANNEL_ID, apply_banner)
             continue
 
         def apply(q):
@@ -477,6 +496,21 @@ def channel_icon():
     def apply(q):
         q["icon_job"], q["icon_error"] = job, None
         q["icon_notes"], q["icon_cast"] = notes, [c["id"] for c in cast]  # remembered for next time
+    return jsonify(update_doc("app_settings", CHANNEL_ID, apply))
+
+
+@app.post("/api/channel/banner")
+def channel_banner():
+    s = settings()
+    channel_doc()
+    data = body()
+    notes = str(data.get("notes", "")).strip()[:600]
+    cast = cast_for([str(i) for i in (data.get("cast") or [])][:4])
+    job = sv.banner_job(s, notes, cast)
+
+    def apply(q):
+        q["banner_job"], q["banner_error"] = job, None
+        q["banner_notes"], q["banner_cast"] = notes, [c["id"] for c in cast]
     return jsonify(update_doc("app_settings", CHANNEL_ID, apply))
 
 
@@ -682,7 +716,7 @@ def activity():
     running, events, warnings, auto_on = [], [], [], []
 
     ch = store.load_doc("app_settings", CHANNEL_ID) or {}
-    if can_poll and (ch.get("icon_job") or ch.get("clip_job")):
+    if can_poll and (ch.get("icon_job") or ch.get("clip_job") or ch.get("banner_job")):
         try:
             advance_channel(s, ch)
             ch = store.load_doc("app_settings", CHANNEL_ID) or ch
@@ -869,6 +903,12 @@ def projects_update(pid):
             for group, keys in (("direction", ("keyframe", "beats")), ("choreo", ("counts",))):
                 if sc.get(group) and isinstance(new.get(group), dict):
                     sc[group].update({k: str(new[group][k]) for k in keys if k in new[group]})
+        costumes = (incoming.get("direction") or {}).get("costumes")
+        if isinstance(costumes, list) and p["plan"].get("direction"):
+            names = {c["name"] for c in cast_for(p["brief"].get("cast", []))}
+            p["plan"]["direction"]["costumes"] = [
+                {"name": str(x.get("name")), "costume": str(x.get("costume", "")).strip()} for x in costumes
+                if x.get("name") in names and str(x.get("costume", "")).strip()]
         for loc in (incoming.get("direction") or {}).get("locations", []):
             target = dr.location(p["plan"], loc.get("id"))
             if target and "description" in loc:
@@ -1382,7 +1422,16 @@ def projects_render(pid):
                     raise sv.UserError(f"Made previews for scenes up to {sc['n'] - 1}. Press Render again to finish.")
                 p = _build_preview(s, pid, p, sc)
                 sc = _scene(p, sc["n"])
-            paths.append((sc["preview"]["url"], store.download_to(sc["preview"]["url"], store.tmp_path(f"part{sc['n']}.mp4"))))
+            try:
+                part = store.download_to(sc["preview"]["url"], store.tmp_path(f"part{sc['n']}.mp4"))
+                if not os.path.exists(part):
+                    raise OSError("preview file is missing")
+            except (requests.RequestException, OSError):
+                # The saved preview's file is gone: cut it again (same key, so its approval stands).
+                p = _build_preview(s, pid, p, sc)
+                sc = _scene(p, sc["n"])
+                part = store.download_to(sc["preview"]["url"], store.tmp_path(f"part{sc['n']}.mp4"))
+            paths.append((sc["preview"]["url"], part))
             _progress(pid, i + 1, len(scenes))
         song = _song_file(p) if p.get("song") else None
         out = sync.assemble([path for _, path in paths], song, store.tmp_path("final.mp4"))

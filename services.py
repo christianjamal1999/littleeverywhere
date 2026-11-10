@@ -1119,6 +1119,49 @@ def icon_job(settings, notes="", cast=()):
     return image_job({**settings, "image_resolution": "2k", "image_quality": "medium"}, prompt, refs, "1:1")
 
 
+# YouTube's banner: one 2560x1440 image. TVs show all of it, computers a 2560x423 strip across the middle,
+# tablets 1855x423 and phones 1546x423 of that strip. So everything that matters sits in the middle 1546x423.
+BANNER_SIZE = (2560, 1440)
+BANNER_SAFE = (1546, 423)
+
+
+def banner_job(settings, notes="", cast=()):
+    """The channel banner. notes: what the creator wants in it. cast: characters to include, from their
+    reference images."""
+    name = settings.get("channel_name") or "our channel"
+    cast = [c for c in cast if c.get("images")]
+    wish = f" What the creator asked for, which comes first: {notes.strip()}." if notes.strip() else ""
+    refs, legend = cast_refs(settings, cast, per_character=1) if cast else ([], [])
+    who = (f"{' and '.join(c['name'] for c in cast)}, shown from the chest up at a small size, smiling, standing "
+           "beside the channel name inside that band. " if cast else "No people. ")
+    prompt = ((f"{style_prefix(settings, cast)}{identity_lock(cast)}" if cast else "")
+              + f"Wide YouTube channel banner for a kids' music channel called \"{name}\".{wish} "
+              "LAYOUT, the most important instruction: the image is cropped differently on every device, so "
+              "everything that matters sits inside one narrow horizontal band across the exact middle of the "
+              "image, the middle 60% of the width and the middle 28% of the height. In that band: the words "
+              f"\"{name}\" in big rounded playful letters, spelled exactly, centered. {who}"
+              "Above the band, below it, and at the far left and right there is only simple background scenery "
+              "(sky, soft clouds, rolling hills, grass, floating music notes) with no faces, no characters, no "
+              "text and nothing important, because phones and computers cut those parts off while TVs show "
+              "them. One continuous bright, saturated, cheerful scene. No other text, no watermark."
+              + (f" References: {'; '.join(legend)}." if legend else ""))
+    return image_job({**settings, "image_resolution": "2k", "image_quality": "medium"}, prompt, refs, "16:9")
+
+
+def banner_file(url):
+    """The generated banner as an exact 2560x1440 JPEG (YouTube's size, well under its 6 MB limit)."""
+    w, h = BANNER_SIZE
+    src = store.download_to(url, store.tmp_path("banner_src" + (os.path.splitext(url.split("?")[0])[1] or ".png")))
+    out = store.tmp_path("banner.jpg")
+    _run(["-i", src, "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}",
+          "-frames:v", "1", "-q:v", "3", out])
+    _discard_download(url, src)
+    with open(out, "rb") as f:
+        data = f.read()
+    os.remove(out)
+    return data
+
+
 INTRO_BACKGROUND = "0xFFF6E0"
 
 

@@ -181,7 +181,7 @@ a.btn-like { text-decoration: none; }
 .chip.on { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
 .chip.busy { color: var(--ok); }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; }
-#cast-pick .chip, #icon-cast .chip { cursor: pointer; padding: 3px 10px; font-size: 13px; }
+#cast-pick .chip, #icon-cast .chip, #banner-cast .chip { cursor: pointer; padding: 3px 10px; font-size: 13px; }
 
 /* ---------- characters ---------- */
 .char-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
@@ -329,3 +329,15 @@ table.data td .muted { font-size: 12px; }
 .thumb-pick img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
 video.short { max-height: 420px; aspect-ratio: 9/16; border-radius: var(--radius-sm); }
 .ok { color: var(--ok); }
+
+/* channel banner with the areas each device shows */
+.banner-box { position: relative; max-width: 720px; margin: 8px 0; border-radius: var(--radius-sm); overflow: hidden; background: var(--sunken); }
+.banner-box img { width: 100%; aspect-ratio: 16/9; display: block; }
+.banner-box .guide { position: absolute; top: 50%; left: 50%; height: 29.4%; transform: translate(-50%, -50%); border: 2px dashed rgba(255,255,255,.9); box-shadow: 0 0 0 1px rgba(0,0,0,.45); pointer-events: none; }
+.banner-box .guide span { position: absolute; left: 6px; top: -22px; font-size: 11.5px; font-weight: 600; color: #fff; background: rgba(0,0,0,.6); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.banner-box .guide.desktop { width: 100%; border-left: 0; border-right: 0; }
+.banner-box .guide.tablet { width: 72.5%; }
+.banner-box .guide.tablet span { left: auto; right: 6px; }
+.banner-box .guide.phone { width: 60.4%; border-style: solid; }
+.banner-box .guide.phone span { top: auto; bottom: -22px; }
+.banner-box.no-guides .guide { display: none; }

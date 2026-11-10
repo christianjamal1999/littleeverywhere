@@ -394,13 +394,20 @@ async function renderChannel() {
   const err = ch.icon_error || ch.clip_error, errBox = $("#channel-error");
   errBox.hidden = !err; errBox.textContent = err || "";
   if (!state.characters.length) await loadCharacters().catch(() => {});
-  const notes = $("#icon-notes"), picks = $("#icon-cast");
-  if (!notes.dataset.filled) { notes.value = ch.icon_notes || ""; notes.dataset.filled = "1"; }
-  const chosen = new Set(picks.dataset.filled ? $$(".chip.on", picks).map((x) => x.dataset.cid) : ch.icon_cast || []);
-  picks.dataset.filled = "1";
   const withPics = (state.characters || []).filter((c) => c.images.length);
-  picks.innerHTML = withPics.length ? withPics.map((c) => `<span class="chip ${chosen.has(c.id) ? "on" : ""}" data-cid="${c.id}">${esc(c.name)}</span>`).join("")
-    : `<span class="muted">No characters with pictures yet.</span>`;
+  for (const kind of ["icon", "banner"]) {
+    const notes = $(`#${kind}-notes`), picks = $(`#${kind}-cast`);
+    if (!notes.dataset.filled) { notes.value = ch[`${kind}_notes`] || ""; notes.dataset.filled = "1"; }
+    const chosen = new Set(picks.dataset.filled ? $$(".chip.on", picks).map((x) => x.dataset.cid) : ch[`${kind}_cast`] || []);
+    picks.dataset.filled = "1";
+    picks.innerHTML = withPics.length ? withPics.map((c) => `<span class="chip ${chosen.has(c.id) ? "on" : ""}" data-cid="${c.id}">${esc(c.name)}</span>`).join("")
+      : `<span class="muted">No characters with pictures yet.</span>`;
+  }
+  const busyBanner = !!ch.banner_job, bannerBtn = $("#make-banner"), bannerDl = $("#banner-download");
+  bannerBtn.disabled = busyBanner; bannerBtn.textContent = busyBanner ? "Generating…" : ch.banner ? "New banner" : "Generate banner";
+  $("#banner-box").hidden = !ch.banner; if (ch.banner) { $("#banner-img").src = ch.banner; bannerDl.href = ch.banner; }
+  bannerDl.hidden = !ch.banner;
+  $("#banner-error").hidden = !ch.banner_error; $("#banner-error").textContent = ch.banner_error || "";
   const preview = $("#intro-preview");
   preview.hidden = !ch.clip;
   if (ch.clip && preview.dataset.src !== ch.clip) {
@@ -408,18 +415,20 @@ async function renderChannel() {
     preview.innerHTML = `<video src="${esc(ch.clip)}" controls muted playsinline preload="metadata"></video>`;
   }
 }
-for (const [id, path] of [["#make-icon", "icon"], ["#make-intro", "animate"]]) {
+for (const [id, path] of [["#make-icon", "icon"], ["#make-intro", "animate"], ["#make-banner", "banner"]]) {
   $(id).addEventListener("click", async (e) => {
     if (!hasKeys("hf_key_id", "hf_key_secret")) return;
-    const cast = $$("#icon-cast .chip.on").map((x) => x.dataset.cid);
-    if (path === "icon" && cast.length > 4) { toast("Pick at most 4 characters for the icon.", true); return; }
-    const ok = await busy(e.currentTarget, () => api("POST", `/api/channel/${path}`, path === "icon" ? { notes: $("#icon-notes").value, cast } : undefined));
+    const art = path !== "animate";
+    const cast = art ? $$(`#${path}-cast .chip.on`).map((x) => x.dataset.cid) : [];
+    if (cast.length > 4) { toast(`Pick at most 4 characters for the ${path}.`, true); return; }
+    const ok = await busy(e.currentTarget, () => api("POST", `/api/channel/${path}`, art ? { notes: $(`#${path}-notes`).value, cast } : undefined));
     renderChannel();
     if (ok) { toast("Working on it. You'll get a notice when it's ready."); kickActivity(); }
   });
 }
 
-$("#icon-cast").addEventListener("click", (e) => { if (e.target.dataset.cid) e.target.classList.toggle("on"); });
+for (const id of ["#icon-cast", "#banner-cast"]) $(id).addEventListener("click", (e) => { if (e.target.dataset.cid) e.target.classList.toggle("on"); });
+$("#banner-guides").addEventListener("change", (e) => $("#banner-box").classList.toggle("no-guides", !e.target.checked));
 
 // ------------------------------------------------------------ dashboard
 const money = (n) => (n > 0 && n < 0.01 ? "<$0.01" : `$${(n || 0).toFixed(2)}`);
@@ -731,6 +740,8 @@ async function openBriefForm(brief, project) {
       </label>
       <label>Cast</label>
       <div class="chips" id="cast-pick">${state.characters.length ? state.characters.map((c) => `<span class="chip ${cast.has(c.id) ? "on" : ""}" data-cid="${c.id}">${esc(c.name)}</span>`).join("") : `<span class="muted">No characters yet. Add some in the Characters tab for a consistent cast.</span>`}</div>
+      <label>Outfits for this video <span class="muted">optional; leave blank for their usual outfits</span>
+        <input name="wardrobe" value="${esc(brief.wardrobe)}" placeholder="e.g. winter coats, scarves and mittens; or Halloween costumes"></label>
       <label>Notes for Claude <textarea name="notes" rows="2">${esc(brief.notes)}</textarea></label>
       <div class="row">${project ? `<button class="primary" type="submit">Save brief</button>` : `<button class="primary big-go" type="submit" id="go-all">▶ Save & do everything</button><button type="submit">Save & write the song</button>`}</div>
     </form>`;
@@ -959,6 +970,11 @@ function directionPanel(p, lock) {
     ${d ? `<p>${esc(d.look.style)}</p>
       <p class="muted"><b>Palette:</b> ${esc(d.look.palette)} · <b>Light:</b> ${esc(d.look.lighting)} · <b>Lens:</b> ${esc(d.look.lens)}</p>
       <p class="muted"><b>Wardrobe:</b> ${esc(d.look.wardrobe)}</p>
+      <details class="fold" data-fold="${p.id}:outfits" ${(d.costumes || []).length ? "open" : ""}><summary>Outfits in this video${(d.costumes || []).length ? "" : ": their usual ones"}</summary>
+        ${(p.brief.cast || []).map((cid) => { const name = castName(cid), worn = (d.costumes || []).find((x) => x.name === name)?.costume || "";
+          return `<label>${esc(name)} <input data-costume="${esc(name)}" value="${esc(worn)}" placeholder="Usual outfit"></label>`; }).join("")}
+        <p class="hint">Whatever is written here is worn in every shot, with the same signature item, hair and face. Change it before the keyframes are painted; after that, redo the scenes you want changed.</p>
+      </details>
       <p class="muted"><b>Flow:</b> ${esc(d.flow)}</p>
       <div class="grid locations">${locs.map(locCard).join("")}</div>
       <p class="hint">Each set photo is sent with every keyframe shot in that place, so the world looks the same from shot to shot. Make them before the keyframes.</p>`
@@ -1030,7 +1046,8 @@ function collectPlanEdits() {
       if (s.choreo) edit.choreo = { counts: $("[data-c=counts]", card)?.value ?? s.choreo.counts };
       return edit;
     }),
-    direction: { locations: (plan.direction?.locations || []).map((l) => ({ id: l.id, description: $(`.location[data-loc="${CSS.escape(l.id)}"] [data-loc-desc]`)?.value ?? l.description })) },
+    direction: { ...(plan.direction && $("[data-costume]") ? { costumes: $$("[data-costume]").map((el) => ({ name: el.dataset.costume, costume: el.value })) } : {}),
+      locations: (plan.direction?.locations || []).map((l) => ({ id: l.id, description: $(`.location[data-loc="${CSS.escape(l.id)}"] [data-loc-desc]`)?.value ?? l.description })) },
   };
 }
 

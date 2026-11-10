@@ -291,12 +291,13 @@ def next_step(s, p):
                        "had a problem after two remakes. Watch and approve, or decline with a note.")
         raise Wait(f"Your turn: watch and approve {len(waiting)} scene{'s' if len(waiting) > 1 else ''} below.")
 
-    if not p.get("thumb_options") and not p.get("thumb_jobs") and not p.get("thumbnail"):
-        if p.get("thumb_error"):
-            raise Stop(f"The thumbnails failed: {p['thumb_error']}")
-        return "thumbnails", "Making three thumbnails", lambda: studio.submit_thumbnails(s, pid, p)
-    if p.get("thumb_jobs"):
-        raise Wait("Making three thumbnails…")
+    # Thumbnails never hold the video up: they're tried a few times, and the video finishes either way.
+    if not p.get("thumbnail") and not p.get("thumb_jobs") and auto.get("thumb_tries", 0) < MAX_TRIES:
+        def thumbnails():
+            studio.update_doc("projects", pid, lambda q: (q["auto"].update(thumb_tries=auto.get("thumb_tries", 0) + 1),
+                                                          q.update(thumb_error=None)))
+            return studio.submit_thumbnails(s, pid, p)
+        return "thumbnails", "Making three thumbnails", thumbnails
     if not p.get("final") or auto.get("rendered") != _render_stamp(p):
         def render():
             out = studio.projects_render(pid)
@@ -305,6 +306,11 @@ def next_step(s, p):
         return "render", "Rendering the finished video", render
     if not p.get("short") and song and not auto.get("short_failed"):
         return "short", "Cutting the vertical Short", lambda: build_short(s, pid)
+    if p.get("thumb_jobs"):
+        raise Wait("Finishing the thumbnails…")
+    if not p.get("thumbnail"):
+        raise Stop(f"Your video is ready. The thumbnails couldn't be made ({p.get('thumb_error') or 'no reason given'}); "
+                   "press Make 3 thumbnails in a little while.", done=True)
     raise Stop("Your video is ready: pick a thumbnail and publish.", done=True)
 
 

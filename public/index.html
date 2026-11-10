@@ -211,6 +211,24 @@
           </div>
         </div>
         <div class="intro-preview" id="intro-preview" hidden></div>
+        <h3>Channel banner</h3>
+        <p class="hint">One 2560 x 1440 image that works on every device. TVs show all of it; computers, tablets and phones show a strip across the middle, so the name and faces are kept inside the phone area.</p>
+        <div class="banner-box" id="banner-box" hidden>
+          <img id="banner-img" alt="Channel banner">
+          <div class="guide desktop"><span>Computer</span></div>
+          <div class="guide tablet"><span>Tablet</span></div>
+          <div class="guide phone"><span>Phone: keep the name and faces in here</span></div>
+        </div>
+        <label>What should the banner show? <span class="muted">optional</span>
+          <textarea id="banner-notes" rows="2" placeholder="e.g. a sunny meadow with a rainbow, the kids waving, 'New songs every week!' under the name"></textarea></label>
+        <label>Put your characters in it <span class="muted">optional, up to 4</span></label>
+        <div class="chips" id="banner-cast"></div>
+        <div class="row">
+          <button type="button" class="small" id="make-banner">Generate banner</button>
+          <a class="btn-like small" id="banner-download" download hidden>Download banner</a>
+          <label class="check" style="margin:0"><input type="checkbox" id="banner-guides" checked> Show device guides</label>
+        </div>
+        <p class="error" id="banner-error" hidden></p>
         <label>Look of every video
           <select name="look">
             <option value="lifelike">Lifelike: almost-real children with film lighting, like the top kids' music channels</option>

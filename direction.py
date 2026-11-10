@@ -79,6 +79,7 @@ def _cast_sheet(cast):
 def _song_summary(plan, brief):
     return (f"Title: {plan.get('title')}\nTopic: {brief.get('topic')}\nLesson: {brief.get('lesson') or '-'}\n"
             f"Setting from the brief: {brief.get('setting') or '-'}\nMood: {brief.get('mood') or '-'}\n"
+            f"Outfits the creator asked for in this video: {brief.get('wardrobe') or 'their usual outfits'}\n"
             f"Music: {plan.get('music_style')} at {plan.get('bpm')} BPM\n\nLyrics:\n"
             + "\n".join(f"[{s['name']}]\n{s['lyrics']}" for s in plan["sections"]))
 
@@ -176,9 +177,11 @@ Write:
   bright, sunny, safe outdoor or cozy indoor places that suit the lyrics. One of them is the chorus stage:
   a glossy, colorful dance floor in the video's theme with glowing lights behind it (a barn-party stage for
   a farm song, a moonlit disco clearing for a night song), where every chorus is danced.
-- costumes: only for a holiday or dress-up song, one entry per cast member with their costume for this
-  video. A costume replaces the outfit but keeps their signature item (worked into the costume, like the
-  sunflowers on a witch hat), hair and face exactly. For every other song, an empty list.
+- costumes: when the creator asked for outfits in this video (see above), or for a holiday or dress-up
+  song: one entry per cast member with exactly what they wear for the whole video, described precisely
+  (each garment, its color and material) so it is identical in every shot. It replaces the usual outfit
+  but keeps their signature item (worked in, like the sunflowers on a witch hat), hair and face exactly.
+  Otherwise, an empty list.
 {LOCATION_GUIDE}
 - flow: two or three sentences on how the video moves through the locations and how the light changes.
 - scene_locations: the location id of every shot (same n as above). Keep runs of shots in one place; only
