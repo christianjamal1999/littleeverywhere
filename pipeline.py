@@ -157,13 +157,13 @@ def _cast_step(s, p):
     look = sv.look_of(s)
     for c in cast:
         if c.get("job"):
-            raise Wait(f"Drawing {c['name']} in the {'3D animated' if look == '3d' else 'current'} look…")
+            raise Wait(f"Drawing {c['name']} in the {look} look…")
         if c.get("job_error") and c.get("restyling"):
             raise Stop(f"Couldn't redraw {c['name']}: {c['job_error']}")
         if not c.get("images"):
             raise Stop(f"{c['name']} has no picture yet. Generate one in Characters, then press Do everything.")
         if look != "custom" and c.get("style", "photo") != look:
-            return "cast", f"Redrawing {c['name']} in the 3D animated look", lambda: studio.restyle_character(s, c)
+            return "cast", f"Redrawing {c['name']} in the {look} look", lambda: studio.restyle_character(s, c)
         if c.get("needs_body"):
             raise Wait(f"Drawing {c['name']}…")
     return None

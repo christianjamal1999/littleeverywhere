@@ -94,6 +94,32 @@ STYLE_3D = ("Frame from a big-budget 3D animated family film: stylized, appealin
             "creamy bokeh, crisp focus on the eyes. Always this same 3D animated look; never a photograph of "
             "real children, never flat 2D cartoon, never anime")
 
+STYLE_LIFELIKE = ("Still from a premium family film where the children look almost real: lifelike toddlers with true "
+                  "human proportions (a normal-sized head on a real child's body, natural-sized eyes, real little "
+                  "hands), real skin with soft natural texture and rosy cheeks, fine individual hair strands and "
+                  "flyaways, real clothes with visible weave, stitching, buttons and creases. Gently idealized, like "
+                  "the most adorable real kids on a perfect day. Bright warm sunlight with a soft rim light, vivid "
+                  "saturated colors, shallow depth of field with creamy bokeh, tack-sharp eyes with wet catchlights. "
+                  "Never a cartoon: no oversized heads, no giant eyes, no bobblehead or toy bodies, no smooth "
+                  "plastic or clay skin, no painted or illustrated look")
+
+GUIDELINES_LIFELIKE = """\
+ALLOWED
+- Original lifelike children aged 3-6 with true child proportions, or the lifelike version of a real child whose parent or guardian gave consent in the New Character form.
+- One signature item per character (a hat, hair clip, headband, scarf) that they wear in every video, and one signature outfit; a holiday costume may replace the outfit but always keeps the signature item, hair and face.
+- Real detail: skin texture, individual hair strands, real fabric weave and stitching.
+- Anatomically correct faces: two matching natural-sized eyes with round pupils and catchlights, natural eyebrows, a child's small nose, two matching ears, small even baby teeth in the correct number.
+- Genuine big smiles and laughter.
+- Modest everyday children's clothes that fully cover the body; colorful and cultural prints shown respectfully.
+- Wheelchairs and hearing aids shown naturally. Playing, dancing, singing, toy instruments, friendly animals.
+NOT ALLOWED
+- Cartoon or toy look: oversized heads or eyes, plastic skin, outlines, exaggerated proportions.
+- The likeness of any real child without that consent, of any other real person, or another channel's or film's characters.
+- Adult styling on children: makeup, glossy lips, glamour or posed-model looks.
+- Swimwear, underwear, sleepwear, bare midriffs or revealing clothes, even at the beach or pool.
+- Anything scary, violent or unsafe.
+- Text, logos, watermarks, extra fingers, distorted faces, fused or too many teeth, mismatched eyes or ears."""
+
 GUIDELINES_3D = """\
 ALLOWED
 - Original stylized 3D animated children aged 3-6 with cute toddler proportions, or the 3D animated version of a real child whose parent or guardian gave consent in the New Character form.
@@ -109,27 +135,30 @@ NOT ALLOWED
 - Anything scary, violent or unsafe.
 - Text, logos, watermarks, extra fingers, distorted faces, fused or too many teeth, mismatched eyes or ears."""
 
-LOOKS = {"3d": "3D animated (like the top kids' music channels)", "photo": "Photoreal children",
+LOOKS = {"lifelike": "Lifelike: almost-real children with film lighting, like the top kids' music channels",
+         "cartoon": "3D cartoon: big heads and big eyes", "photo": "Plain photograph",
          "custom": "Custom (the two boxes below)"}
+STYLES = {"lifelike": (STYLE_LIFELIKE, GUIDELINES_LIFELIKE), "cartoon": (STYLE_3D, GUIDELINES_3D),
+          "photo": (HOUSE_STYLE, CHARACTER_GUIDELINES)}
 
 
 def look_of(settings):
     look = settings.get("look")
-    return look if look in LOOKS else "3d"
+    return look if look in LOOKS else "lifelike"  # also what the earlier "3d" setting becomes
 
 
 def house_style(settings):
     look = look_of(settings)
     if look == "custom":
         return settings.get("house_style") or HOUSE_STYLE
-    return STYLE_3D if look == "3d" else HOUSE_STYLE
+    return STYLES[look][0]
 
 
 def guidelines(settings):
     look = look_of(settings)
     if look == "custom":
         return settings.get("character_guidelines") or CHARACTER_GUIDELINES
-    return GUIDELINES_3D if look == "3d" else CHARACTER_GUIDELINES
+    return STYLES[look][1]
 
 
 def style_prefix(settings, cast=()):
@@ -952,16 +981,18 @@ def character_prompt(settings, c, shot="headshot", photos=0, restyle=False):
     photos: how many photos of the real person come first in the references, for their AI version.
     restyle: reference image 1 is this character in another visual style; redraw them in the current one."""
     who = "person" if is_adult(c) else "child"
-    animated = look_of(settings) == "3d"
-    kind = "3D animated character portrait" if animated else "Photo"
+    look = look_of(settings)
+    animated = look in ("lifelike", "cartoon")
+    kind = {"lifelike": "Lifelike film portrait", "cartoon": "3D animated character portrait"}.get(look, "Photo")
+    version = "lifelike film version" if look == "lifelike" else "3D animated film version"
     base = f"{style_prefix(settings, [c])}{identity_lock([c])}{kind} of {character_line(c)}. "
     if photos:
         refs = "Reference image 1 is a photo" if photos == 1 else f"Reference images 1-{photos} are photos"
         if animated:
-            base += (f"{refs} of this real {who}. Make the 3D animated film version of this very same {who}: "
+            base += (f"{refs} of this real {who}. Make the {version} of this very same {who}: "
                      "instantly recognizable to their family, keeping the face shape, eye color and shape, "
                      "eyebrows, nose, ears, smile, teeth, skin tone, freckles, marks and hair exactly, at the "
-                     "same age, translated into the animated style. ")
+                     "same age, in the visual style described above. ")
         else:
             base += (f"{refs} of this real {who}. Make a new photo of the very same {who}: an exact likeness "
                      "that their family would recognize instantly, keeping the face shape, eyes, eyebrows, nose, "

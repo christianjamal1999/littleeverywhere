@@ -467,7 +467,7 @@ function charCard(c) {
     <div class="row char-actions">
       <button class="small ${c.images.length ? "" : "primary"}" data-act="gen">${c.images.length ? "New portrait" : "Generate portrait"}</button>
       ${c.images.length ? `<button class="small" data-act="sheet">Turnaround sheet</button>` : ""}
-      ${c.images.length && state.settings.look !== "custom" && (c.style || "photo") !== state.settings.look ? `<button class="small primary" data-act="restyle" ${c.job ? "disabled" : ""}>Redraw in the ${state.settings.look === "3d" ? "3D animated" : "photoreal"} look</button>` : ""}
+      ${c.images.length && state.settings.look !== "custom" && (c.style || "photo") !== state.settings.look ? `<button class="small primary" data-act="restyle" ${c.job ? "disabled" : ""}>Redraw in the ${state.settings.look} look</button>` : ""}
       <label style="margin:0"><input type="file" accept="image/png,image/jpeg,image/webp" data-act="upload" hidden><span class="btn-like small">Upload</span></label>
     </div>
     <details class="fold" data-fold="${c.id}:look"><summary>Appearance</summary>

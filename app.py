@@ -33,7 +33,7 @@ DEFAULTS = {
     "elevenlabs_api_key": "",
     "music_model": "music_v2_5",
     "channel_name": "Wander Tunes",
-    "look": "3d",
+    "look": "lifelike",
     "reuse_chorus": True,
     "auto_review": True,
     "youtube_client_id": "",
@@ -85,7 +85,7 @@ def settings(overrides=None):
     s = dict(DEFAULTS)
     s.update({k: v for k, v in {**plain, **secrets, **(overrides or {})}.items()
               if k in DEFAULTS and v not in (None, "")})
-    s["video_mode"] = sv.video_mode(s)
+    s["video_mode"], s["look"] = sv.video_mode(s), sv.look_of(s)
     return s
 
 
@@ -217,7 +217,11 @@ def advance_character(s, c):
         q["job"], q["job_error"] = None, err
         if url and q.pop("restyling", None):
             # The old look's images step aside (kept, in case you switch back), and the body is redone to match.
-            q["old_images"], q["images"], q["needs_body"] = q["images"], [url], True
+            if q.get("old_images"):
+                store.delete_media(q["images"])  # an in-between redraw; the originals stay
+            else:
+                q["old_images"] = q["images"]
+            q["images"], q["needs_body"] = [url], True
         elif url:
             q["images"].append(url)
         if url:
@@ -540,7 +544,9 @@ def restyle_character(s, c):
     if not c.get("icon"):
         others = [o for o in store.list_docs("characters") if o["id"] != c["id"]]
         c = update_doc("characters", c["id"], lambda q: q.update(icon=sv.find_icon(s, c, others)))
-    job = sv.image_job(s, sv.character_prompt(s, c, restyle=True), c["images"][:1], "3:4", best=True)
+    # Redraw from the earliest pictures (the original, closest to the real child), not from a redraw of a redraw.
+    source = (c.get("old_images") or c["images"])[:1]
+    job = sv.image_job(s, sv.character_prompt(s, c, restyle=True), source, "3:4", best=True)
     job["style"] = sv.look_of(s)
 
     def apply(q):
