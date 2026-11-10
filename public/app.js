@@ -567,9 +567,19 @@ function showCharSource() {
 }
 charForm.addEventListener("change", (e) => { if (["source", "kind", "file"].includes(e.target.name)) showCharSource(); });
 $("#char-cancel").addEventListener("click", () => charDialog.close());
+const surprised = [];
+$("#char-surprise").addEventListener("click", async (e) => {
+  if (!hasKeys("anthropic_api_key")) return;
+  const idea = await busy(e.target, () => api("POST", "/api/characters/suggest", { avoid: surprised }));
+  if (!idea) return;
+  surprised.push(idea.name);
+  const f = charForm.elements;
+  f.name.value = idea.name; f.age.value = idea.age; f.concept.value = idea.concept;
+  e.target.textContent = "✨ Another one";
+});
 $("#new-character").addEventListener("click", () => {
   if (!hasKeys("anthropic_api_key", "hf_key_id", "hf_key_secret")) return;
-  charForm.reset(); showCharSource();
+  charForm.reset(); showCharSource(); surprised.length = 0;
   $("#char-error").hidden = true;
   charDialog.showModal();
 });
@@ -772,6 +782,8 @@ function renderProject(p) {
   const end = scenes.length ? scenes[scenes.length - 1].end : 0;
   const task = runningTask(p);
   const folds = readFolds(ed);
+  // Anything playing (the song, a scene, the final video) keeps playing through the redraw.
+  const playing = $$("audio, video", ed).filter((m) => !m.paused && !m.ended);
   const lock = (kind, label, idle) => (task?.kind === kind ? `disabled><span class="spinner"></span> ${label}` : `>${idle}`);
   ed.innerHTML = `<button class="ghost small back" id="back">← All videos</button>
     <div class="editor-head">
@@ -854,6 +866,10 @@ function renderProject(p) {
       </div>
     </section>` : ""}`;
   applyFolds(ed, folds);
+  for (const old of playing) {
+    const fresh = $$(old.tagName.toLowerCase(), ed).find((m) => m.getAttribute("src") === old.getAttribute("src"));
+    if (fresh) fresh.replaceWith(old); // moved back in the same instant, so the browser doesn't pause it
+  }
   bindEditor(p);
   updateTaskBanner();
 }

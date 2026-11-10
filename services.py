@@ -752,6 +752,25 @@ Every look and outfit must follow these rules:
     return claude_json(settings, CHANNEL_PLAYBOOK, prompt, CHARACTER_SCHEMA, "Character design")
 
 
+def surprise_character(settings, existing, avoid=()):
+    """A name, age and one-paragraph concept for a new cast member who rounds out the cast."""
+    taken = ", ".join(list(avoid)) or "none"
+    cast = "\n".join(f"- {c['name']}, {c.get('age') or '?'}: {c.get('look', '')[:140]} Signature item: "
+                     f"{c.get('icon') or 'none'}. {c.get('personality', '')[:140]}" for c in existing) or "- none yet"
+    prompt = f"""Invent one new recurring kid for the channel's cast, for the creator to approve.
+Existing cast (the new one must look and act clearly different: other hair, skin tone, colors, energy):
+{cast}
+Names already suggested and turned down: {taken}
+name: a short, friendly first name that's easy for a 3-year-old to say and unlike the others.
+age: a number from 3 to 6.
+concept: three or four sentences a designer could draw from: hair, skin tone and build; one signature item
+worn on the head; a simple everyday outfit in two or three colors; their personality and a signature dance
+move or catchphrase. Nothing they hold or carry."""
+    schema = {"type": "object", "additionalProperties": False, "required": ["name", "age", "concept"],
+              "properties": {k: {"type": "string"} for k in ["name", "age", "concept"]}}
+    return claude_json(settings, CHANNEL_PLAYBOOK, prompt, schema, "Character idea")
+
+
 def describe_photo(settings, photos, name, age, kind, existing):
     """Turn photos of a consenting real person into a character sheet. Describes what's visible only.
     photos: [(bytes, content_type)], all of the same person."""

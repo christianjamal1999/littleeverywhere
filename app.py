@@ -566,6 +566,12 @@ def _new_character(fields, job, extra=None):
     return store.save_doc("characters", c)
 
 
+@app.post("/api/characters/suggest")
+def characters_suggest():
+    avoid = [str(x)[:40] for x in (body().get("avoid") or [])][:12]
+    return jsonify(sv.surprise_character(settings(), store.list_docs("characters"), avoid))
+
+
 @app.post("/api/characters/describe")
 def characters_describe():
     """New character from words: Claude writes the sheet, then its master portrait is generated."""
