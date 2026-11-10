@@ -772,6 +772,16 @@ def research():
     return jsonify(sv.research_trends(settings(), body().get("focus", "")))
 
 
+@app.post("/api/brief/suggest")
+def brief_suggest():
+    """A whole brief for a video the channel hasn't made yet. Body: {avoid: [topics already suggested]}."""
+    done = []
+    for p in store.list_docs("projects"):
+        done.append(" / ".join(x for x in ((p.get("plan") or {}).get("title"), p["brief"].get("topic")) if x))
+    avoid = [str(x)[:120] for x in (body().get("avoid") or [])][:12]
+    return jsonify(sv.suggest_brief(settings(), done, store.list_docs("characters"), avoid))
+
+
 @app.post("/api/ideas")
 def ideas():
     data = body()

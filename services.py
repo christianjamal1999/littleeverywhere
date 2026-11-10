@@ -538,6 +538,45 @@ next 4-8 weeks. hook = the chorus hook line. why = one sentence on why it should
     return claude_json(settings, CHANNEL_PLAYBOOK, prompt, IDEAS_SCHEMA, "Video ideas")["ideas"]
 
 
+BRIEF_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["topic", "lesson", "setting", "mood", "notes", "why"],
+    "properties": {k: {"type": "string"} for k in ["topic", "lesson", "setting", "mood", "notes", "why"]},
+}
+# What earns the views on the channels this one is modelled on, most reliable first.
+WINNING_FORMATS = [
+    "a dance-along where every line names a move to copy (wiggle, stomp, freeze, spin)",
+    "a dance-along built around animals and how each one moves or sounds",
+    "a feelings or kindness song (sharing, taking turns, saying sorry, being brave, big feelings)",
+    "a good-habits song (brushing teeth, tidying up, washing hands, bedtime, trying new foods)",
+    "a counting, colors, shapes or ABC song where the learning is acted out with the whole body",
+    "a farm, zoo, ocean or jungle animal song with sounds to shout back",
+    "a vehicles or things-that-go song with actions (trains, diggers, rockets, buses)",
+    "a seasonal or holiday dance song for a holiday 3 to 6 weeks from today",
+]
+
+
+def suggest_brief(settings, done, cast, avoid=()):
+    """One ready-to-make video idea the channel hasn't done. done: titles and topics already made."""
+    import datetime
+    import random
+    made = "\n".join(f"- {t}" for t in list(done) + list(avoid)) or "- nothing yet"
+    names = ", ".join(f"{c['name']} ({c.get('personality', '')[:60]})" for c in cast) or "no recurring cast yet"
+    prompt = f"""Pick the next video for the channel "{settings.get('channel_name')}" and fill in its brief.
+Today is {datetime.date.today().isoformat()}.
+Format to use this time: {random.choice(WINNING_FORMATS)}.
+Already made or already suggested (choose a clearly different subject, hook and setting from all of these):
+{made}
+Cast: {names}
+
+topic: the song's subject as a short working title, like "Stomp Like a Dinosaur".
+lesson: what kids learn or practice, in a few words.
+setting: where it happens; bright, colorful and different from the videos already made.
+mood: the genre and energy, like "bouncy dance pop with claps, 115 BPM".
+notes: for the songwriter: the chorus hook line, 3-4 named actions kids copy, and which cast member leads.
+why: one sentence on why this should perform, for the creator."""
+    return claude_json(settings, CHANNEL_PLAYBOOK, prompt, BRIEF_SCHEMA, "Video idea")
+
+
 # ============================================================== connection tests
 
 def test_anthropic(settings):

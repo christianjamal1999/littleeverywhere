@@ -695,7 +695,8 @@ async function openBriefForm(brief, project) {
   const ed = $("#studio-editor"); ed.hidden = false;
   const cast = new Set(brief.cast || state.characters.map((c) => c.id));
   ed.innerHTML = `<button class="ghost small back" id="back">← All videos</button>
-    <h1>${project ? "Edit brief" : "New video"}</h1>
+    <div class="row between"><h1>${project ? "Edit brief" : "New video"}</h1>${project ? "" : `<button class="primary big-go" id="surprise" type="button">✨ Surprise me</button>`}</div>
+    <p class="muted" id="surprise-why">${project ? "" : "No idea? Surprise me fills in everything with a video you haven't made yet. Press it again for a different one."}</p>
     <form id="brief" class="card settings">
       <label>Topic <input name="topic" required value="${esc(brief.topic)}" placeholder="e.g. Counting ducks at the pond"></label>
       <label>What kids learn <input name="lesson" value="${esc(brief.lesson)}" placeholder="e.g. counting 1-10, taking turns, farm animal sounds"></label>
@@ -712,6 +713,17 @@ async function openBriefForm(brief, project) {
       <div class="row">${project ? `<button class="primary" type="submit">Save brief</button>` : `<button class="primary big-go" type="submit" id="go-all">▶ Save & do everything</button><button type="submit">Save & write the song</button>`}</div>
     </form>`;
   $("#back").onclick = loadProjects;
+  const surprise = $("#surprise"), suggested = [];
+  if (surprise) surprise.onclick = async () => {
+    if (!hasKeys("anthropic_api_key")) return;
+    const idea = await busy(surprise, () => api("POST", "/api/brief/suggest", { avoid: suggested }));
+    if (!idea) return;
+    suggested.push(idea.topic);
+    const f = $("#brief").elements;
+    for (const k of ["topic", "lesson", "setting", "mood", "notes"]) f[k].value = idea[k];
+    $("#surprise-why").textContent = `Why this one: ${idea.why} Edit anything, press Surprise me for another, or go.`;
+    surprise.textContent = "✨ Another idea";
+  };
   $("#cast-pick").onclick = (e) => { const c = e.target.dataset.cid; if (c) { e.target.classList.toggle("on"); } };
   $("#brief").onsubmit = async (e) => {
     e.preventDefault();
