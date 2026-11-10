@@ -32,13 +32,14 @@ WORLD_SCHEMA = _obj(
     locations={"type": "array", "items": _obj(id=STR, name=STR, description=STR, layout=STR, lighting=STR,
                                               palette=STR, props=STR, plate_prompt=STR)},
     flow=STR,
+    costumes={"type": "array", "items": _obj(name=STR, costume=STR)},
     scene_locations={"type": "array", "items": _obj(n={"type": "integer"}, location=STR)},
 )
 
 SHOTS_SCHEMA = _obj(
     scenes={"type": "array", "items": _obj(n={"type": "integer"}, shot_size=STR, angle=STR, lens=STR,
                                            camera_move=STR, beats=STR, blocking=STR, lighting=STR,
-                                           keyframe=STR, continuity=STR)},
+                                           keyframe=STR, continuity=STR, card=STR)},
 )
 
 
@@ -71,7 +72,7 @@ def _scene_lines(plan, cast, scenes=None, with_choreo=False):
 def _cast_sheet(cast):
     return "\n".join(
         f"- {c['name']} ({'adult' if c.get('kind') == 'adult' else 'child'}, age {c.get('age') or '?'}): "
-        f"outfit: {c.get('outfit', '')} | mannerisms: {c.get('mannerisms', '')} | personality: "
+        f"signature item: {c.get('icon', '') or 'none'} | outfit: {c.get('outfit', '')} | mannerisms: {c.get('mannerisms', '')} | personality: "
         f"{c.get('personality', '')} | signature: {c.get('signature', '')}" for c in cast) or "- no recurring cast"
 
 
@@ -159,7 +160,7 @@ def design_world(settings, plan, cast, brief):
 Cast:
 {_cast_sheet(cast)}
 
-House photographic style: {settings.get('house_style') or sv.HOUSE_STYLE}
+House visual style: {sv.house_style(settings)}
 
 Shots:
 {_scene_lines(plan, cast, with_choreo=True)}
@@ -167,18 +168,25 @@ Shots:
 Write:
 - look: the visual bible every shot follows. style: the photographic look in one or two sentences.
   palette: the video's overall color palette. lighting: the overall lighting approach. lens: the lenses
-  and depth of field. wardrobe: the rule that every cast member wears exactly their signature outfit from
-  the cast list in every shot, with no costumes, hats, coats or changes, plus any prop someone carries
-  throughout.
-- locations: 2-5 sets, few enough that each one is seen several times and stays recognizable. Prefer
-  bright, sunny, safe outdoor or cozy indoor places that suit the lyrics.
+  and depth of field. wardrobe: the rule that every cast member wears exactly their signature item and
+  signature outfit from the cast list in every shot (or their costume from the costumes list below, when
+  there is one), with no other changes, plus any prop someone carries throughout.
+- locations: 2-4 sets, few enough that each one is seen several times and stays recognizable. Prefer
+  bright, sunny, safe outdoor or cozy indoor places that suit the lyrics. One of them is the chorus stage:
+  a glossy, colorful dance floor in the video's theme with glowing lights behind it (a barn-party stage for
+  a farm song, a moonlit disco clearing for a night song), where every chorus is danced.
+- costumes: only for a holiday or dress-up song, one entry per cast member with their costume for this
+  video. A costume replaces the outfit but keeps their signature item (worked into the costume, like the
+  sunflowers on a witch hat), hair and face exactly. For every other song, an empty list.
 {LOCATION_GUIDE}
 - flow: two or three sentences on how the video moves through the locations and how the light changes.
 - scene_locations: the location id of every shot (same n as above). Keep runs of shots in one place; only
-  move when the song moves (a new verse, the bridge)."""
+  move when the song moves (a new verse, the bridge). Every chorus shot is on the chorus stage."""
     world = sv.claude_json(settings, DIRECTOR, prompt, WORLD_SCHEMA, "Creative direction: world")
     ids = [loc["id"] for loc in world["locations"]]
     where = {s["n"]: s["location"] for s in world.pop("scene_locations")}
+    names = {c["name"] for c in cast}
+    world["costumes"] = [x for x in world.get("costumes", []) if x["name"] in names and x["costume"].strip()]
     if not ids:
         raise sv.UserError("The creative director didn't design any locations. Try again.")
     return world, {sc["n"]: where[sc["n"]] if where.get(sc["n"]) in ids else ids[0] for sc in plan["scenes"]}
@@ -211,10 +219,13 @@ Shots to break down:
 {f"The shot just before these is scene {before['n']}: {before.get('visual', '')}" if before else "These open the video."}
 
 For every shot write:
-- shot_size: extreme wide, wide, medium wide, medium, medium close-up or close-up. Any shot with sung words
-  is a medium close-up or close-up of its singers, faces large, turned to the camera, mouths clearly
-  visible, because lip-sync only works that way. Vary sizes from shot to shot and open each new set with
-  a wider shot.
+- shot_size: extreme wide, wide, medium wide, medium, medium close-up or close-up. The mix that works for
+  this audience: about half the shots are a tight close-up of ONE face filling the frame (forehead to chin,
+  eyes sharp, background melted into soft colorful bokeh); chorus shots alternate those with a wide of the
+  cast dancing in a row on the stage, whole bodies visible; a shot with no cast is an insert (the animal,
+  clapping hands, stomping boots, the prop) framed big and simple. Any shot with sung words and one or two
+  singers is a close-up or medium close-up with the mouth clearly visible, because lip-sync only works
+  that way. Never two shots of the same size in a row.
 - angle: eye level at the children's height, low angle, high angle, over the shoulder, and so on.
 - lens: focal length and depth of field.
 - camera_move: one smooth move for the whole shot (slow push-in, gentle pull-back, slow pan left, small arc
@@ -231,6 +242,8 @@ For every shot write:
   their pose and expression at second 0, and which of the set's landmarks are visible and where. Name the
   cast but don't describe their faces or outfits; references handle that.
 - continuity: what must match the neighbouring shots: props in hands, positions, light, weather.
+- card: almost always empty. Only when the shot teaches one thing to read or count (a number, a color, an
+  animal's name, a place), the 1-3 words to pop up on screen, like "RED", "1 2 3" or "Golden Gate Bridge".
 Only the cast listed as "in shot" may be seen or mentioned in that shot's notes: never write who is out of
 frame, hiding or off-screen. Frame a shot of one person centered (two people: left and right of center) with
 no empty side of the frame left for someone else to fill, and no doorways or windows with people in them.
@@ -271,6 +284,6 @@ def location(plan, loc_id):
 
 def plate_prompt(settings, plan, loc):
     look = plan["direction"]["look"]
-    return (f"{settings['house_style']}. Wide establishing photograph of an empty set, with no people, no "
+    return (f"{sv.house_style(settings)}. Wide establishing view of an empty set, with no people, no "
             f"children and no animals in it: {loc['plate_prompt']} {loc['description']} Lighting: "
             f"{loc['lighting']}. Palette: {loc['palette']}. Look: {look['style']} No text, no watermark.")

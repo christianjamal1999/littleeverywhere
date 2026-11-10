@@ -113,6 +113,43 @@ def _snap(t):
     return round(t * FPS) / FPS
 
 
+REUSE_DURATION_SLACK = 0.2  # seconds a repeated chorus shot may differ in length from the first one
+REUSE_WORD_SLACK = 0.15  # and each word may land this far from where it did the first time
+
+
+def mark_reuse(plan, lines, enabled=True):
+    """A chorus shot whose words fall at the same moments as the same shot of an earlier chorus reuses
+    that shot's keyframe and animation (scene["reuse"] = its number): the chorus is paid for once and the
+    lips still match, because the song repeats on the same beat grid."""
+    timed = [(w, t[0]) for ln in lines if ln["heard"] for w, t in zip(ln["words"], ln["times"])]
+    firsts = []
+    for sc in plan["scenes"]:
+        sc.pop("reuse", None)
+        words = [(_plain(w), at - sc["start"]) for w, at in timed if sc["start"] <= at < sc["end"]]
+        if not enabled or not words or not str(sc.get("section", "")).lower().startswith("chorus"):
+            continue
+        dur, cast = sc["end"] - sc["start"], sorted(sc.get("cast", []))
+        for n, fwords, fdur, fcast in firsts:
+            if (fcast == cast and abs(fdur - dur) <= REUSE_DURATION_SLACK and len(fwords) == len(words)
+                    and all(a[0] == b[0] and abs(a[1] - b[1]) <= REUSE_WORD_SLACK for a, b in zip(fwords, words))):
+                sc["reuse"] = n
+                break
+        else:
+            firsts.append((sc["n"], words, dur, cast))
+
+
+def media_scene(plan, sc):
+    """The scene as it should be rendered: a reused chorus shot shows its original's keyframe and clip."""
+    if not sc.get("reuse"):
+        return sc
+    src = next((x for x in plan["scenes"] if x["n"] == sc["reuse"]), None)
+    return {**sc, "image": (src or {}).get("image"), "video": (src or {}).get("video")}
+
+
+def unheard_share(lines):
+    return sum(not ln["heard"] for ln in lines) / max(1, len(lines))
+
+
 def fit_scenes(plan, lines, duration, cast_ids=None):
     """Move scene boundaries so every scene starts just before its own lyric lines are sung and ends where
     the next scene's begin. Fills scene["sung"] with the words really sung in it. Returns the numbers of
@@ -183,13 +220,31 @@ def video_kbps(settings, duration, bumpers):
     return int(max(1500, min(12000, (room * 8000 / max(1.0, duration) - 192) / BITRATE_OVERSHOOT)))
 
 
+def card_of(sc):
+    return str((sc.get("direction") or {}).get("card") or "").strip()[:40]
+
+
 def preview_key(sc, tkey, captions, size, kbps):
     return "|".join(str(x) for x in (sc.get("video") or sc.get("image") or "none", *frames(sc), tkey, captions,
-                                     size, kbps, 2))
+                                     size, kbps, card_of(sc), 3))
 
 
-def write_captions(lines, w, h, path):
-    out = sv._ass_header(w, h) + sv._timed_caption_events([ln for ln in lines if ln["heard"]], sv.POP)
+CARD_POP = r"{\fad(150,200)\t(0,160,\fscx112\fscy112)\t(160,320,\fscx100\fscy100)}"
+
+
+def write_captions(lines, w, h, path, scenes=()):
+    """The sing-along lines (if any) plus each scene's learning card, a big word popped up top by code."""
+    out = sv._ass_header(w, h)
+    size = round(h * 0.13)
+    at = out.index("[Events]") - 1
+    out.insert(at, f"Style: Card,Fredoka,{size},&H00FFFFFF,&H00FFFFFF,&H00B4469A,&H64000000,-1,0,0,0,"
+                   f"100,100,2,0,1,{max(5, size // 8)},{max(3, size // 12)},8,{w // 12},{w // 12},{round(h * 0.07)},1")
+    out += sv._timed_caption_events([ln for ln in lines if ln["heard"]], sv.POP)
+    for sc in scenes:
+        if card_of(sc):
+            start, end = sc["start"] + 0.3, max(sc["start"] + 1.2, sc["end"] - 0.2)
+            out.append(f"Dialogue: 1,{sv._ass_time(start)},{sv._ass_time(end)},Card,,0,0,0,,{CARD_POP}"
+                       + sv._ass_text(card_of(sc)))
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     return path
@@ -246,3 +301,85 @@ def assemble(preview_paths, song_path, out_path):
         sv._run(["-f", "concat", "-safe", "0", "-i", listing, "-c", "copy", "-movflags", "+faststart", out_path])
     os.remove(listing)
     return out_path
+
+
+# ============================================================== a vertical Short from the first chorus
+
+SHORT_MAX_SECONDS = 58
+
+
+def short_scenes(plan):
+    """The first chorus (the hook), as the run of scenes to put in the Short."""
+    scenes, run = plan["scenes"], []
+    for sc in scenes:
+        if str(sc.get("section", "")).lower().startswith("chorus"):
+            run.append(sc)
+        elif run:
+            break
+    if not run:
+        run = [sc for sc in scenes if sc.get("sung")][:6] or scenes[:6]
+    while len(run) > 1 and run[-1]["end"] - run[0]["start"] > SHORT_MAX_SECONDS:
+        run.pop()
+    return run
+
+
+def build_short(scenes, song_path, out_path):
+    """9:16: the middle of each widescreen clip, large, over a blurred fill of the same clip, with the song."""
+    parts = []
+    for sc in scenes:
+        f0, f1 = frames(sc)
+        n = max(1, f1 - f0)
+        src = store.download_to(sc["video"], store.tmp_path("shortclip.mp4"))
+        seg = store.tmp_path(f"short{sc['n']}.mp4")
+        graph = (f"[0:v]fps={FPS},tpad=stop_mode=clone:stop_duration={n / FPS:.3f},split[a][b];"
+                 "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.06[bg];"
+                 "[b]crop=ih*1.2:ih,scale=1080:-2[fg];[bg][fg]overlay=0:(H-h)/2,setsar=1[v]")
+        sv._run(["-i", src, "-filter_complex", graph, "-map", "[v]", "-frames:v", str(n), "-an", "-c:v", "libx264",
+                 "-preset", "fast", "-bf", "0", "-crf", "20", "-maxrate", "6000k", "-bufsize", "6000k",
+                 "-pix_fmt", "yuv420p", "-r", str(FPS), seg])
+        sv._discard_download(sc["video"], src)
+        parts.append(seg)
+    start, dur = frames(scenes[0])[0] / FPS, (frames(scenes[-1])[1] - frames(scenes[0])[0]) / FPS
+    listing = store.tmp_path("short.txt")
+    with open(listing, "w") as f:
+        f.writelines(f"file '{p}'\n" for p in parts)
+    sv._run(["-f", "concat", "-safe", "0", "-i", listing, "-ss", f"{start:.4f}", "-t", f"{dur:.4f}", "-i", song_path,
+             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", f"afade=t=out:st={max(0, dur - 0.6):.2f}:d=0.6"]
+            + PREVIEW_AUDIO + ["-shortest", "-movflags", "+faststart", out_path])
+    for path in parts + [listing]:
+        os.remove(path)
+    return out_path
+
+
+def frame_grabs(video_path, seconds, count=3, width=768):
+    """A few JPEG frames spread across a clip, for the automatic check."""
+    out = []
+    for i in range(count):
+        at = seconds * (i + 0.5) / count
+        path = store.tmp_path(f"grab{i}.jpg")
+        sv._run(["-ss", f"{at:.2f}", "-i", video_path, "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5", path])
+        with open(path, "rb") as f:
+            out.append(f.read())
+        os.remove(path)
+    return out
+
+
+# ============================================================== how far along a video is
+
+def progress(p):
+    """0-100 for the whole job of making this video, weighted by how long each part takes."""
+    plan, song = p.get("plan") or {}, p.get("song") or {}
+    scenes = plan.get("scenes", [])
+    own = [sc for sc in scenes if not sc.get("reuse")]
+
+    def share(items, test):
+        return sum(bool(test(x)) for x in items) / len(items) if items else 0.0
+
+    locs = (plan.get("direction") or {}).get("locations", [])
+    done = (5 * bool(plan) + 5 * bool(song) + 2 * bool(song.get("timing")) + 4 * bool(plan.get("choreography"))
+            + 6 * bool(plan.get("direction")) + 3 * share(locs, lambda x: x.get("image"))
+            + 15 * share(own, lambda x: x.get("image")) + 40 * share(own, lambda x: x.get("video"))
+            + 5 * share(scenes, lambda x: x.get("preview"))
+            + 8 * share(scenes, lambda x: (x.get("review") or {}).get("status") == "approved")
+            + 2 * bool(p.get("thumbnail")) + 4 * bool(p.get("final")) + 1 * bool(p.get("short")))
+    return int(min(100, round(done)))

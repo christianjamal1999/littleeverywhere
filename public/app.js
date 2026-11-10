@@ -13,7 +13,7 @@ const state = { config: null, settings: {}, keys: {}, password: "", characters: 
 // app password stays in this browser. Older versions kept keys here; boot() migrates them.
 const LEGACY_SETTINGS_KEY = "kidsong.settings.v1";
 const PASSWORD_KEY = "kidsong.password";
-const SECRET_FIELDS = ["anthropic_api_key", "hf_key_id", "hf_key_secret", "elevenlabs_api_key"];
+const SECRET_FIELDS = ["anthropic_api_key", "hf_key_id", "hf_key_secret", "elevenlabs_api_key", "youtube_client_id", "youtube_client_secret"];
 function readLocal(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function writeLocal(key, value) {
   try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* private mode */ }
@@ -103,12 +103,27 @@ async function activityTick() {
     activity.server = res.running;
     activity.since = res.now; writeLocal(SINCE_KEY, String(res.now));
     for (const ev of res.events) handleEvent(ev);
+    activity.auto = res.auto || [];
+    if (activity.auto.length) nudgeServer();
   } catch { /* offline or signed out: try again on the next tick */ }
   activity.ticking = false;
   renderActivity();
-  activity.timer = setTimeout(activityTick, runningItems().length ? 5000 : 30000);
+  activity.timer = setTimeout(activityTick, runningItems().length || activity.auto?.length ? 5000 : 30000);
 }
 function kickActivity() { setTimeout(activityTick, 300); }
+// The server moves every "do everything" video one step per call (its own timer does the same once a
+// minute); an open tab just makes it snappier, then shows the result if that video is on screen.
+let nudging = false;
+async function nudgeServer() {
+  if (nudging) return;
+  nudging = true;
+  try {
+    await api("POST", "/api/tick");
+    const pid = state.project?.id;
+    if (pid && viewing(pid) && (activity.auto.some((a) => a.id === pid) || state.project.auto?.on)) await refreshOpenProject();
+  } catch { /* the next tick tries again */ }
+  nudging = false;
+}
 
 // Run fn once even if several events in the same poll ask for it.
 const pendingOnce = new Set();
@@ -128,6 +143,8 @@ function handleEvent(ev) {
   if (tabActive("dashboard")) once("spend", renderSpend);
   if (ev.tab === "settings") once("channel", renderChannel);
   if (tabActive("studio") && !$("#studio-list").hidden) once("list", loadProjects);
+  // While a video is being made for you, its dozens of small steps stay quiet; you hear when it's done or stuck.
+  if (ev.kind !== "auto" && (activity.auto || []).some((a) => a.id === ev.project)) return;
   notice(ev);
 }
 
@@ -135,7 +152,7 @@ function notice(ev) {
   const box = $("#notices");
   const el = document.createElement("div");
   el.className = `notice ${ev.ok ? "" : "bad"}`;
-  el.innerHTML = `<div><b>${ev.ok ? "✓" : "✗"} ${esc(ev.label)} ${ev.ok ? "finished" : "failed"}</b>
+  el.innerHTML = `<div><b>${ev.ok ? "✓" : "✗"} ${esc(ev.label)}${ev.kind === "auto" ? "" : ev.ok ? " finished" : " failed"}</b>
       ${ev.title ? `<div class="muted">${esc(ev.title)}</div>` : ""}
       ${ev.error ? `<div class="error">${esc(ev.error)}</div>` : ""}</div>
     <div class="row">${ev.project || ev.tab ? `<button class="small primary" data-open>Open</button>` : ""}
@@ -184,7 +201,21 @@ function updateTaskBanner() {
   if (item?.total) el.textContent = renderEta(item) || el.textContent;
 }
 
+const bar = (pct) => `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`;
+// Videos being made by "Do everything", shown on every screen so you can leave and come back.
+function renderAutoBars() {
+  const box = $("#auto-bars"), list = activity.auto || [];
+  box.hidden = !list.length;
+  box.innerHTML = list.map((a) => `<button class="auto-bar" data-open="${a.id}" title="Open this video">
+    <span class="row between"><b>${esc(a.title)}</b><span>${a.progress}%</span></span>${bar(a.progress)}
+    <span class="muted">${esc(a.status)}</span></button>`).join("");
+}
+$("#auto-bars").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-open]"); if (!b) return;
+  showTab("studio"); openProject(b.dataset.open);
+});
 function renderActivity() {
+  renderAutoBars();
   updateTaskBanner();
   const items = runningItems();
   const btn = $("#activity-btn");
@@ -263,6 +294,7 @@ function fillSettingsForm() {
     ephemeral: "⚠️ Supabase isn't connected yet: anything you make here will disappear. Add SUPABASE_URL and SUPABASE_SECRET_KEY to this Vercel project's environment variables, then redeploy.",
     local: "Running locally: characters, songs and clips are stored in the app's data folder.",
   }[state.config.storage];
+  renderYouTube();
   if (state.config.storage === "ephemeral") toast("Supabase isn't connected, so your work won't be saved (see Settings).", true);
 }
 function applySettingsView(view) {
@@ -435,12 +467,14 @@ function charCard(c) {
     <div class="row char-actions">
       <button class="small ${c.images.length ? "" : "primary"}" data-act="gen">${c.images.length ? "New portrait" : "Generate portrait"}</button>
       ${c.images.length ? `<button class="small" data-act="sheet">Turnaround sheet</button>` : ""}
+      ${c.images.length && state.settings.look !== "custom" && (c.style || "photo") !== state.settings.look ? `<button class="small primary" data-act="restyle" ${c.job ? "disabled" : ""}>Redraw in the ${state.settings.look === "3d" ? "3D animated" : "photoreal"} look</button>` : ""}
       <label style="margin:0"><input type="file" accept="image/png,image/jpeg,image/webp" data-act="upload" hidden><span class="btn-like small">Upload</span></label>
     </div>
     <details class="fold" data-fold="${c.id}:look"><summary>Appearance</summary>
       <label>Name <input data-f="name" value="${esc(c.name)}"></label>
       <div class="two"><label>Age <input data-f="age" value="${esc(c.age)}"></label><label>Child or adult <select data-f="kind"><option value="child">Child</option><option value="adult" ${c.kind === "adult" ? "selected" : ""}>Adult</option></select></label></div>
       <label>Signature move <input data-f="signature" value="${esc(c.signature)}"></label>
+      <label>Signature item <span class="muted">the one thing they wear in every video, so kids know them at a glance</span><input data-f="icon" value="${esc(c.icon)}" placeholder="e.g. a crown of big yellow sunflowers"></label>
       <label>Look <textarea data-f="look" rows="3">${esc(c.look)}</textarea></label>
       <label>Face <span class="muted">eyes, eyebrows, nose, ears, teeth: must match in every scene</span><textarea data-f="face" rows="5">${esc(c.face)}</textarea></label>
       <label>Mannerisms <span class="muted">how they move</span><textarea data-f="mannerisms" rows="2">${esc(c.mannerisms)}</textarea></label>
@@ -506,6 +540,10 @@ $("#characters").addEventListener("click", async (e) => {
     const ok = await busy(btn, () => trackLocal(`chr:${id}:bible`, `Story bible for ${c.name}`,
       api("POST", `/api/characters/${id}/bible`), { tab: "characters", notifyHere: true }));
     if (ok && tabActive("characters")) { toast(`${c.name}'s story bible is filled in. Edit anything you like.`); renderCharacters(); }
+  } else if (btn.dataset.act === "restyle") {
+    if (!hasKeys("anthropic_api_key", "hf_key_id", "hf_key_secret")) return;
+    const ok = await busy(btn, () => api("POST", `/api/characters/${id}/restyle`));
+    if (ok) { toast(`Redrawing ${c.name}: the face first, then the full body. The old pictures are kept.`); renderCharacters(); kickActivity(); }
   } else if (btn.dataset.act === "gen" || btn.dataset.act === "sheet") {
     if (!hasKeys("hf_key_id", "hf_key_secret")) return;
     const ok = await busy(btn, () => api("POST", `/api/characters/${id}/generate`, { sheet: btn.dataset.act === "sheet" }));
@@ -632,12 +670,23 @@ async function loadProjects() {
       <div class="thumb">${p.thumb ? `<img src="${esc(p.thumb)}" alt="" loading="lazy">` : "No image yet"}</div>
       <h3>${esc(p.title)}</h3>
       <p class="muted">${p.scenes ? `${p.scenes} scenes` : "Brief only"}${p.final ? " · rendered ✓" : ""}</p>
-      ${p.busy ? `<span class="chip busy"><span class="spinner"></span> ${p.busy} running</span>` : ""}</div>`).join("")
+      ${p.auto ? `<div class="card-bar">${bar(p.progress)}<span class="muted">${p.progress}% · ${esc(p.auto)}</span></div>` : p.busy ? `<span class="chip busy"><span class="spinner"></span> ${p.busy} running</span>` : ""}${p.youtube ? `<span class="chip approved">On YouTube</span>` : ""}</div>`).join("")
       : `<div class="card"><h3>No videos yet</h3><p class="muted">Start with a new video, or get ideas from Claude in the Ideas tab. Tip: set up your cast in Characters first.</p></div>`;
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  renderCompilations();
 }
 $("#projects").addEventListener("click", (e) => { const c = e.target.closest("[data-open]"); if (c) openProject(c.dataset.open); });
 $("#new-video").addEventListener("click", () => openBriefForm({}));
+async function renderCompilations() {
+  let list = [];
+  try { list = await api("GET", "/api/compilations"); } catch { /* optional */ }
+  $("#compilations").innerHTML = list.length ? `<h2>Compilations</h2>` + list.map((c) => `<p><a href="${esc(c.url)}" download>${esc(c.title)}</a> <span class="muted">${c.titles.length} songs</span></p>`).join("") : "";
+}
+$("#new-compilation").addEventListener("click", async (e) => {
+  if (!confirm("Join every rendered video, newest first, into one long compilation? Long videos earn most of the watch time on kids' channels. No credits used.")) return;
+  const made = await busy(e.target, () => trackLocal("compilation", "Building a compilation", api("POST", "/api/compilations", {}), { tab: "studio", notifyHere: true }));
+  if (made) { toast("Compilation ready below your videos."); renderCompilations(); }
+});
 
 // ------------------------------------------------------------ studio: brief
 async function openBriefForm(brief, project) {
@@ -678,7 +727,7 @@ async function openBriefForm(brief, project) {
     const p = await busy(btn, () => api("POST", "/api/projects", { brief: b }));
     if (!p) return;
     state.project = p; renderProject(p);
-    if (btn.id === "go-all") toggleAutopilot(p);
+    if (btn.id === "go-all") toggleAuto(p);
     else if (state.keys.anthropic_api_key?.set) writeSong($("#write-song"));
   };
 }
@@ -703,9 +752,10 @@ function renderProject(p) {
   const ed = $("#studio-editor"); ed.hidden = false;
   const plan = p.plan;
   const scenes = plan?.scenes || [];
-  const imgs = scenes.filter((s) => s.image).length, vids = scenes.filter((s) => s.video).length;
-  const keyframesDone = scenes.length > 0 && scenes.every((s) => s.image && !s.jobs?.image);
-  const approvedCount = scenes.filter(isApproved).length, declined = scenes.filter((s) => s.review?.status === "declined" && !s.jobs?.video);
+  const own = scenes.filter((s) => !s.reuse);
+  const imgs = own.filter((s) => s.image).length, vids = own.filter((s) => s.video).length;
+  const keyframesDone = own.length > 0 && own.every((s) => s.image && !s.jobs?.image);
+  const approvedCount = scenes.filter(isApproved).length, declined = own.filter((s) => s.review?.status === "declined" && !s.jobs?.video);
   const allApproved = scenes.length > 0 && approvedCount === scenes.length;
   const end = scenes.length ? scenes[scenes.length - 1].end : 0;
   const task = runningTask(p);
@@ -714,17 +764,19 @@ function renderProject(p) {
   ed.innerHTML = `<button class="ghost small back" id="back">← All videos</button>
     <div class="editor-head">
       <div><h1>${esc(plan?.title || p.brief.topic)}</h1><p class="muted">${esc(p.brief.lesson || "")} ${p.brief.setting ? "· " + esc(p.brief.setting) : ""}</p></div>
-      <div class="row"><button class="primary big-go" id="make-all">${autopilotOn(p.id) ? "■ Stop" : "▶ Do everything"}</button><button class="small" id="edit-brief">Edit brief</button><button class="small ghost danger" id="del-project">Delete</button></div>
+      <div class="row"><button class="primary big-go" id="make-all">${p.auto?.on ? "■ Stop" : "▶ Do everything"}</button><button class="small" id="edit-brief">Edit brief</button><button class="small ghost danger" id="del-project">Delete</button></div>
     </div>
-    ${autopilotOn(p.id) ? `<div class="banner go">${esc(autopilotStatus(p))}</div>` : ""}
+    ${p.auto?.on ? `<div class="banner go"><span class="spinner"></span> <b>Doing everything: ${p.progress ?? 0}%.</b> ${esc(p.auto.status || "")} <span class="muted">You can leave this page or close the tab; it keeps going and you'll get a notice when it's done.</span>${bar(p.progress ?? 0)}</div>`
+      : p.auto?.error ? `<div class="banner stop"><b>Do everything stopped.</b> ${esc(p.auto.error)}</div>`
+      : p.auto?.done && !p.youtube ? `<div class="banner go"><b>Your video is ready.</b> Pick a thumbnail and publish below.</div>` : ""}
     ${task ? `<div class="banner"><span class="spinner"></span> <b>${esc(task.label)}…</b> <span id="task-eta" data-kind="${esc(task.kind)}">${task.kind === "render" ? `Expect ${roughTime(renderEstimate(scenes))}` : `Started ${ago(task.started)}`}</span>. You can leave this page or close the tab; you'll get a notice when it's done.</div>` : ""}
     <div class="steps">
       <span class="step ${plan ? "done" : ""}">1. Song</span>
       <span class="step ${p.song ? "done" : ""}">2. Music</span>
       <span class="step ${plan?.choreography ? "done" : ""}">3. Dance</span>
       <span class="step ${plan?.direction ? "done" : ""}">4. Direction</span>
-      <span class="step ${scenes.length && imgs === scenes.length ? "done" : ""}">5. Keyframes ${imgs}/${scenes.length}</span>
-      <span class="step ${scenes.length && vids === scenes.length ? "done" : ""}">6. Animation ${vids}/${scenes.length}</span>
+      <span class="step ${own.length && imgs === own.length ? "done" : ""}">5. Keyframes ${imgs}/${own.length}</span>
+      <span class="step ${own.length && vids === own.length ? "done" : ""}">6. Animation ${vids}/${own.length}</span>
       <span class="step ${allApproved ? "done" : ""}">7. Review ${approvedCount}/${scenes.length}</span>
       <span class="step ${p.final ? "done" : ""}">8. Publish</span>
     </div>
@@ -756,9 +808,9 @@ function renderProject(p) {
 
     <section class="panel">
       <div class="panel-head"><h2>Scenes</h2>
-        <div class="row"><button id="all-images" class="${keyframesDone ? "" : "primary"}">Generate all keyframes</button><button id="all-videos" class="${keyframesDone && vids < scenes.length ? "primary" : ""}" ${keyframesDone ? "" : "disabled"} title="${keyframesDone ? "" : "Unlocks when every scene has its keyframe"}">Animate all</button>${declined.length ? `<button id="redo-declined" class="primary">Redo ${declined.length} declined</button>` : ""}</div></div>
+        <div class="row"><button id="all-images" class="${keyframesDone ? "" : "primary"}">Generate all keyframes</button><button id="all-videos" class="${keyframesDone && vids < own.length ? "primary" : ""}" ${keyframesDone ? "" : "disabled"} title="${keyframesDone ? "" : "Unlocks when every scene has its keyframe"}">Animate all</button>${declined.length ? `<button id="redo-declined" class="primary">Redo ${declined.length} declined</button>` : ""}</div></div>
       ${vids ? `<p class="muted">Watch each scene's preview with the song and its captions, then approve or decline it. The final video is the approved previews joined exactly as you saw them. ${approvedCount}/${scenes.length} approved.</p>` : ""}
-      ${keyframesDone ? "" : `<p class="muted">Animate all unlocks when all ${scenes.length} keyframes are done (${imgs} so far).</p>`}
+      ${keyframesDone ? "" : `<p class="muted">Animate all unlocks when all ${own.length} keyframes are done (${imgs} so far).</p>`}
       <div class="scenes">${scenes.map(sceneCard).join("")}</div>
     </section>
 
@@ -773,96 +825,55 @@ function renderProject(p) {
           <label class="check"><input type="checkbox" id="add-outro" ${state.settings.add_outro !== false ? "checked" : ""}> End with an outro: meet the cast, then like and subscribe</label>
           <div class="row"><button class="${allApproved ? "primary" : ""}" id="render" ${allApproved ? "" : `title="Approve every scene first"`} ${lock("render", "Rendering…", allApproved ? (p.final ? "Re-render" : "Render approved video") : `Render (${approvedCount}/${scenes.length} approved)`)}</button><button class="small ghost" id="render-draft">Render a draft</button></div>
           <p class="muted">${allApproved ? "Joins the approved previews exactly as you saw them, no credits used." : "The final render unlocks when every scene is approved. A draft uses whatever is there now."}</p>
+          ${p.short ? `<h3>Vertical Short</h3><video class="short" controls src="${esc(p.short)}"></video><p><a href="${esc(p.short)}" download>Download Short</a> <button class="small" id="make-short">Redo</button></p>`
+            : p.final ? `<p><button class="small" id="make-short" ${lock("short", "Cutting…", "Cut a vertical Short from the chorus")}</button></p>` : ""}
         </div>
         <div>
-          <div class="thumb">${p.thumbnail ? `<img src="${esc(p.thumbnail)}" alt="Thumbnail">` : p.thumb_job ? `<span class="spinner"></span>` : "No thumbnail yet"}</div>
+          <div class="thumb">${p.thumbnail ? `<img src="${esc(p.thumbnail)}" alt="Thumbnail">` : p.thumb_jobs?.length ? `<span class="spinner"></span>` : "No thumbnail yet"}</div>
+          ${(p.thumb_options || []).length > 1 ? `<div class="thumb-options">${p.thumb_options.map((u) => `<button class="thumb-pick ${u === p.thumbnail ? "on" : ""}" data-thumb="${esc(u)}" title="Use this thumbnail"><img src="${esc(u)}" alt="Thumbnail option" loading="lazy"></button>`).join("")}</div>` : ""}
           ${p.thumb_error ? `<p class="error">${esc(p.thumb_error)}</p>` : ""}
-          <button class="small" id="thumb">${p.thumbnail ? "New thumbnail" : "Generate thumbnail"}</button>
+          <button class="small" id="thumb" ${p.thumb_jobs?.length ? "disabled" : ""}>${p.thumb_jobs?.length ? '<span class="spinner"></span> Making 3 options' : p.thumbnail ? "3 new options" : "Make 3 thumbnails"}</button>
           <label>YouTube title <input id="yt-title" value="${esc(plan.youtube_title)}"></label>
           <label>Description <textarea id="yt-desc" rows="6">${esc(plan.youtube_description)}</textarea></label>
           <label>Tags <textarea id="yt-tags" rows="2">${esc(plan.tags.join(", "))}</textarea></label>
           <div class="row"><button class="small" id="save-meta">Save</button><button class="small" id="copy-meta">Copy all</button></div>
-          <p class="hint">When uploading: mark the video "Made for kids" and turn on YouTube's altered or synthetic content label.</p>
+          ${publishBox(p)}
         </div>
       </div>
     </section>` : ""}`;
   applyFolds(ed, folds);
   bindEditor(p);
   updateTaskBanner();
-  autopilotStep(p);
 }
 
-// ------------------------------------------------------------ studio: make the whole video
-// Presses each step's button when the one before it is done. It runs while this video is open
-// and picks up where it left off when you come back. Any failure stops it, so nothing is paid for twice.
-const AUTOPILOT_KEY = "kidsong.autopilot", AUTOPILOT_RETRY_MS = 20000;
-const USD_PER_SCENE = { seedance_ref: 1.5, kling_i2v: 0.45, wan_i2v: 0.85, ltx_fast: 0.85 };
-const autopilot = { step: "", at: 0, batching: false };
-function autopilotOn(pid) { return readLocal(AUTOPILOT_KEY) === pid; }
-function autopilotNext(p) {
-  const scenes = p.plan?.scenes || [];
-  if (!p.plan) return { step: "write", button: "#write-song" };
-  if (!p.song) return { step: "compose", button: "#compose" };
-  if (!p.song.timing) return { step: "timing", button: "#retime" };
-  if (!p.plan.choreography) return { step: "choreograph", button: "#choreograph" };
-  if (!p.plan.direction) return { step: "direct", button: "#direct" };
-  const locs = p.plan.direction.locations;
-  const failedSet = locs.find((l) => l.error);
-  if (failedSet) return { stop: `The set photo of ${failedSet.name} failed: ${failedSet.error}` };
-  if (locs.some((l) => l.job)) return {};
-  if (locs.some((l) => !l.image)) return { step: "plates", button: "#all-plates" };
-  if (scenes.some((s) => s.errors?.image || s.errors?.video || s.errors?.preview)) return { stop: "A scene failed. Fix or redo it, then press Do everything again." };
-  if (scenes.some((s) => s.jobs?.image || s.jobs?.video) || p.thumb_job) return { wait: "Generating on Higgsfield…" };
-  if (scenes.some((s) => !s.image)) return { step: "keyframes", button: "#all-images" };
-  if (scenes.some((s) => !s.video)) return { step: "animation", button: "#all-videos" };
-  if (scenes.some((s) => !s.preview)) return { wait: "Making each scene's preview with the song…" };
-  if (scenes.some((s) => s.review?.status === "declined")) return { step: "redo", button: "#redo-declined" };
-  const left = scenes.filter((s) => !isApproved(s)).length;
-  if (left) return { wait: `Your turn: watch each scene's preview below and approve or decline it (${left} left). Declined scenes are remade automatically, and the video renders itself once everything is approved.` };
-  if (!p.thumbnail) return p.thumb_error ? { stop: `The thumbnail failed: ${p.thumb_error}` } : { step: "thumbnail", button: "#thumb" };
-  if (!p.final) return { step: "render", button: "#render" };
-  return { stop: "Your video is ready to download and publish.", done: true };
-}
-const STEP_LABEL = {
-  write: "Writing the song and storyboard…", compose: "Making the music…", timing: "Timing the lyrics to the song…",
-  choreograph: "Choreographing the dance…", direct: "Directing every shot…", plates: "Making the set photos…",
-  keyframes: "Painting the keyframes…", animation: "Animating every scene with the song…", redo: "Remaking the declined scenes…",
-  thumbnail: "Making the thumbnail…", render: "Rendering the approved video…",
-};
-function autopilotStatus(p) {
-  const task = runningTask(p);
-  if (task) return `Doing everything: ${task.label}…`;
-  const next = autopilotNext(p);
-  return next.wait || (next.step ? `Doing everything: ${STEP_LABEL[next.step] || next.step}` : next.stop || "");
-}
-function autopilotStep(p) {
-  if (!autopilotOn(p.id) || autopilot.batching || runningTask(p)) return;
-  const next = autopilotNext(p);
-  if (next.stop) {
-    writeLocal(AUTOPILOT_KEY, null);
-    toast(next.stop, !next.done);
-    $("#make-all").textContent = "▶ Do everything";
-    return;
-  }
-  if (!next.step || (autopilot.step === next.step && Date.now() - autopilot.at < AUTOPILOT_RETRY_MS)) return;
-  autopilot.step = next.step; autopilot.at = Date.now();
-  setTimeout(() => { if (viewing(p.id) && autopilotOn(p.id)) $(next.button)?.click(); }, 0);
-}
-function toggleAutopilot(p) {
-  if (autopilotOn(p.id)) {
-    writeLocal(AUTOPILOT_KEY, null);
+// ------------------------------------------------------------ studio: do everything
+async function toggleAuto(p) {
+  const pid = p.id;
+  if (p.auto?.on) {
+    renderProject(await api("POST", `/api/projects/${pid}/auto`, { on: false }));
     toast("Stopped. Anything already started will still finish.");
-    renderProject(p);
     return;
   }
-  if (p.final && p.plan?.scenes.every(isApproved)) { toast("This video is already done. Download it under Render and publish."); return; }
   if (!hasKeys("anthropic_api_key", "elevenlabs_api_key", "hf_key_id", "hf_key_secret")) return;
-  const count = p.plan?.scenes.length || Math.ceil((+p.brief.length || 150) / 5);
-  const left = p.plan ? p.plan.scenes.filter((s) => !s.video).length : count;
-  const cost = left * (USD_PER_SCENE[state.settings.video_mode] ?? 0.85) + 1;
-  if (!confirm(`Do everything still missing: song, music, lyric timing, choreography, creative direction, set photos, keyframes and animation. It then waits for you to approve each scene (declined ones are remade), and renders on its own once all are approved. This costs about $${Math.round(cost)}. Keep this video open while it runs.`)) return;
-  writeLocal(AUTOPILOT_KEY, p.id);
-  renderProject(p);
+  let quote = null;
+  try { quote = await api("GET", `/api/projects/${pid}/quote`); } catch { /* the estimate is optional */ }
+  const cost = quote ? `About $${Math.round(quote.usd)} from here: ${quote.clips} clips at ${quote.priced ? "Higgsfield's price of" : "roughly"} $${quote.clip_usd.toFixed(2)} each, ${quote.keyframes} keyframes${quote.reused ? `, and ${quote.reused} repeated chorus shots reused for free` : ""}.` : "";
+  if (!confirm(`Do everything still missing, on the server: song, music, dance, direction, keyframes, animation, an automatic check of every scene (bad ones are remade), thumbnails, the final render and a vertical Short. You only step in if a scene still has a problem after two remakes.\n\n${cost}\n\nYou can close this tab while it runs.`)) return;
+  try {
+    if (state.dirty && p.plan) await savePlan();
+    renderProject(await api("POST", `/api/projects/${pid}/auto`, { on: true }));
+    kickActivity();
+  } catch (e) { toast(e.message, true); }
+}
+
+function publishBox(p) {
+  if (p.youtube) return `<p class="ok">Published${p.youtube.publish_at ? `, scheduled for ${new Date(p.youtube.publish_at).toLocaleString()}` : ` as ${esc(p.youtube.privacy)}`}: <a href="${esc(p.youtube.url)}" target="_blank" rel="noopener">${esc(p.youtube.url)}</a>${p.youtube.short_url ? ` · <a href="${esc(p.youtube.short_url)}" target="_blank" rel="noopener">Short</a>` : ""}</p>${p.youtube.note ? `<p class="error">${esc(p.youtube.note)}</p>` : ""}`;
+  if (!state.keys.youtube_refresh_token?.set) return `<p class="hint">Connect YouTube in Settings to publish from here in one click. Until then: download the video, mark it "Made for kids" and turn on YouTube's altered or synthetic content label when you upload.</p>`;
+  return `<div class="publish-box">
+    <div class="two"><label>Visibility <select id="yt-privacy"><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label>
+    <label>Or schedule for <input type="datetime-local" id="yt-when"></label></div>
+    <button class="primary" id="publish" ${p.final ? "" : "disabled"} ${runningTask(p)?.kind === "publish" ? "disabled" : ""}>${runningTask(p)?.kind === "publish" ? '<span class="spinner"></span> Publishing…' : `Publish to YouTube${p.short ? " with its Short" : ""}`}</button>
+    <p class="hint">Uploads with this title, description plus lyrics, tags and thumbnail, marked Made for kids and as altered or synthetic content.</p></div>`;
 }
 
 function isApproved(s) { return s.review?.status === "approved" && !!s.preview && s.review.key === s.preview.key; }
@@ -923,9 +934,11 @@ function sceneCard(s) {
     : s.video ? `<video src="${esc(s.video)}" preload="none" controls muted loop playsinline poster="${esc(s.image || "")}"></video>`
     : s.image ? `<img src="${esc(s.image)}" alt="Scene ${s.n} keyframe" loading="lazy">`
     : jobs.image ? `<span><span class="spinner"></span><br>painting keyframe…</span>` : `<span>No keyframe yet</span>`;
-  const review = s.review?.status, ok = isApproved(s);
+  const review = s.review?.status, ok = isApproved(s), by = s.review?.by;
+  const verdict = ok ? (by === "ai" ? "✓ Passed the automatic check" : by === "reuse" ? "✓ Approved with its original" : "✓ Approved")
+    : review === "declined" ? (by === "ai" ? (s.review.stuck ? "✗ Still has a problem: your call" : "✗ Failed the check: being remade") : "✗ Declined") : "Needs review";
   const reviewRow = s.preview ? `<div class="row review">
-        <span class="chip ${ok ? "approved" : review === "declined" ? "declined" : ""}">${ok ? "✓ Approved" : review === "declined" ? "✗ Declined" : "Needs review"}</span>
+        <span class="chip ${ok ? "approved" : review === "declined" ? "declined" : ""}">${verdict}</span>
         <button class="small ${ok ? "" : "primary"}" data-review="approve" ${ok || jobs.video ? "disabled" : ""}>Approve</button>
         <button class="small ghost danger" data-review="decline" ${jobs.video ? "disabled" : ""}>Decline</button></div>
       ${review === "declined" && s.review.note ? `<p class="muted">To fix: ${esc(s.review.note)}</p>` : ""}`
@@ -935,11 +948,12 @@ function sceneCard(s) {
     <div class="scene-body">
       <div class="meta"><span>Scene ${s.n} · ${esc(s.section)}</span><span>${fmtTime(s.start)}–${fmtTime(s.end)}</span></div>
       <p class="lyric">${s.sung !== undefined ? (s.sung ? `<span class="sung-label">Sung here:</span> ${esc(s.sung)}` : "<span class='muted'>No words in this part of the song</span>") : esc(s.lyric) || "<span class='muted'>Instrumental</span>"}</p>
-      <div class="chips">${s.cast.map((id) => `<span class="chip">${esc(castName(id))}</span>`).join("")}${s.direction ? `<span class="chip shot">${esc(locationName(s.direction.location))} · ${esc(s.direction.shot_size)}</span>` : ""}</div>
+      <div class="chips">${s.cast.map((id) => `<span class="chip">${esc(castName(id))}</span>`).join("")}${s.direction ? `<span class="chip shot">${esc(locationName(s.direction.location))} · ${esc(s.direction.shot_size)}</span>` : ""}${s.direction?.card ? `<span class="chip shot">Word on screen: ${esc(s.direction.card)}</span>` : ""}</div>
       ${errs.image ? `<p class="error">Keyframe: ${esc(errs.image)}</p>` : ""}${errs.video ? `<p class="error">Video: ${esc(errs.video)}</p>` : ""}${errs.preview ? `<p class="error">Preview: ${esc(errs.preview)} <button class="small" data-act="preview">Try again</button></p>` : ""}
       <div class="row">
-        <button class="small" data-act="image" ${jobs.image ? "disabled" : ""}>${jobs.image ? '<span class="spinner"></span> Keyframe' : s.image ? "Redo keyframe" : "Keyframe"}</button>
-        <button class="small ${s.image && !s.video ? "primary" : ""}" data-act="video" ${!s.image || jobs.video ? "disabled" : ""}>${jobs.video ? '<span class="spinner"></span> Animating' : s.video ? "Re-animate" : "Animate"}</button>
+        ${s.reuse ? `<span class="muted">Chorus repeat: shows scene ${s.reuse}'s shot with this part of the song, at no extra cost.</span>`
+        : `<button class="small" data-act="image" ${jobs.image ? "disabled" : ""}>${jobs.image ? '<span class="spinner"></span> Keyframe' : s.image ? "Redo keyframe" : "Keyframe"}</button>
+        <button class="small ${s.image && !s.video ? "primary" : ""}" data-act="video" ${!s.image || jobs.video ? "disabled" : ""}>${jobs.video ? '<span class="spinner"></span> Animating' : s.video ? "Re-animate" : "Animate"}</button>`}
       </div>
       ${reviewRow}
       ${s.direction ? `<details class="fold" data-fold="scene:${s.n}:dir"><summary>Director's notes</summary>
@@ -1035,7 +1049,7 @@ function bindEditor(p) {
   $("#studio-editor").oninput = () => { state.dirty = true; };
   $("#back").onclick = loadProjects;
   $("#edit-brief").onclick = () => openBriefForm(p.brief, p);
-  $("#make-all").onclick = () => toggleAutopilot(state.project);
+  $("#make-all").onclick = (e) => busy(e.target, () => toggleAuto(state.project));
   $("#del-project").onclick = async (e) => {
     if (!confirm("Delete this video and all its media?")) return;
     await busy(e.target, () => queued(() => api("DELETE", `/api/projects/${id}`)));
@@ -1065,7 +1079,7 @@ function bindEditor(p) {
     action(e.target, () => api("POST", `/api/projects/${id}/retime`));
   };
   const redo = $("#redo-declined");
-  if (redo) redo.onclick = (e) => batch(e.target, "video", (s) => s.review?.status === "declined" && s.image && !s.jobs?.video);
+  if (redo) redo.onclick = (e) => batch(e.target, "video", (s) => !s.reuse && s.review?.status === "declined" && s.image && !s.jobs?.video);
   $$(".scene button[data-review]").forEach((b) => (b.onclick = async (e) => {
     const btn = e.target.closest("button"), n = btn.closest(".scene").dataset.n, decision = btn.dataset.review;
     let note = "";
@@ -1080,6 +1094,16 @@ function bindEditor(p) {
     action(e.target, () => api("POST", `/api/projects/${id}/render`, { draft: true }), [], { kind: "render", label: "Rendering a draft" });
   };
   $("#thumb").onclick = (e) => action(e.target, () => api("POST", `/api/projects/${id}/thumbnail`), ["hf_key_id", "hf_key_secret"]);
+  $$("[data-thumb]").forEach((b) => (b.onclick = () => action(b, () => api("POST", `/api/projects/${id}/thumbnail/pick`, { url: b.dataset.thumb }))));
+  const short = $("#make-short");
+  if (short) short.onclick = (e) => action(e.target, () => api("POST", `/api/projects/${id}/short`), [], { kind: "short", label: "Cutting the vertical Short" });
+  const publish = $("#publish");
+  if (publish) publish.onclick = (e) => {
+    const when = $("#yt-when").value, privacy = $("#yt-privacy").value;
+    if (!confirm(when ? `Upload to YouTube now and schedule it to go public on ${new Date(when).toLocaleString()}?` : `Upload to YouTube now as ${privacy}?`)) return;
+    toast("Uploading to YouTube (a minute or two). You'll get a notice.");
+    action(e.target, () => api("POST", `/api/projects/${id}/publish`, { privacy, publish_at: when ? new Date(when).toISOString() : "" }), [], { kind: "publish", label: "Publishing to YouTube" });
+  };
   for (const [box, key] of [["#captions", "sing_along_captions"], ["#add-intro", "add_intro"], ["#add-outro", "add_outro"]]) {
     $(box).onchange = (e) => saveSettings({ settings: { [key]: e.target.checked } }).catch((err) => toast(err.message, true));
   }
@@ -1107,15 +1131,14 @@ function bindEditor(p) {
   const plates = $("#all-plates");
   if (plates) plates.onclick = (e) => platesFor(e.target, p.plan.direction.locations.filter((l) => !l.image && !l.job));
   $$("[data-plate]").forEach((b) => (b.onclick = (e) => platesFor(e.target, p.plan.direction.locations.filter((l) => l.id === b.dataset.plate))));
-  $("#all-images").onclick = (e) => batch(e.target, "image", (s) => !s.image && !s.jobs?.image);
-  $("#all-videos").onclick = (e) => batch(e.target, "video", (s) => s.image && !s.video && !s.jobs?.video);
+  $("#all-images").onclick = (e) => batch(e.target, "image", (s) => !s.reuse && !s.image && !s.jobs?.image);
+  $("#all-videos").onclick = (e) => batch(e.target, "video", (s) => !s.reuse && s.image && !s.video && !s.jobs?.video);
 }
 
 async function platesFor(btn, locs) {
   if (!hasKeys("hf_key_id", "hf_key_secret")) return;
   if (!locs.length) { toast("Every set already has its photo."); return; }
   const pid = state.project.id;
-  autopilot.batching = true;
   await busy(btn, async () => {
     await savePlan();
     for (const l of locs) {
@@ -1124,7 +1147,6 @@ async function platesFor(btn, locs) {
     }
     kickActivity();
   });
-  autopilot.batching = false;
 }
 
 async function batch(btn, kind, want) {
@@ -1132,7 +1154,6 @@ async function batch(btn, kind, want) {
   const todo = state.project.plan.scenes.filter(want).map((s) => s.n);
   if (!todo.length) { toast(kind === "video" ? "Every scene with a keyframe is already animated." : "Every scene already has a keyframe."); return; }
   const pid = state.project.id;
-  autopilot.batching = true;
   await busy(btn, async () => {
     await savePlan();
     let p, queuedCount = 0;
@@ -1144,8 +1165,27 @@ async function batch(btn, kind, want) {
     kickActivity();
     if (queuedCount) toast(`Queued ${queuedCount} ${kind === "video" ? "animations" : "keyframes"} on Higgsfield. They keep going if you leave this page.`);
   });
-  autopilot.batching = false;
 }
+
+// ------------------------------------------------------------ YouTube
+function renderYouTube() {
+  const on = state.keys.youtube_refresh_token?.set;
+  $("#yt-status").textContent = on ? "Connected. Finished videos get a Publish to YouTube button." : "Not connected.";
+  $("#yt-connect").textContent = on ? "Reconnect YouTube" : "Connect YouTube";
+  $("#yt-disconnect").hidden = !on;
+  $("#yt-redirect").textContent = `${location.origin}/api/youtube/callback`;
+}
+$("#yt-connect").addEventListener("click", async (e) => {
+  await busy(e.target, async () => {
+    const form = readSettingsForm();
+    if (Object.keys(form.keys).length) applySettingsView(await api("PUT", "/api/settings", { keys: form.keys }));
+    const res = await api("POST", "/api/youtube/connect");
+    location.href = res.url;
+  });
+});
+$("#yt-disconnect").addEventListener("click", async (e) => {
+  await busy(e.target, async () => { applySettingsView(await api("POST", "/api/youtube/disconnect")); fillSettingsForm(); });
+});
 
 // ------------------------------------------------------------ boot
 // Older versions kept API keys in this browser: move them to the server once, then forget them here.
@@ -1175,6 +1215,12 @@ async function migrateLegacySettings() {
   fillSettingsForm();
   if (!state.keys.anthropic_api_key?.set || !state.keys.hf_key_id?.set) { showTab("settings"); toast("Welcome! Add your API keys to get started."); }
   else showTab("studio");
+  const yt = new URLSearchParams(location.search).get("youtube");
+  if (yt) {
+    history.replaceState(null, "", location.pathname);
+    showTab("settings");
+    toast(yt === "connected" ? "YouTube is connected. Finished videos now have a Publish button." : yt, yt !== "connected");
+  }
   loadCharacters().catch(() => {});
   activityTick();
 })();

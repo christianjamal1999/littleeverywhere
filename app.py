@@ -33,6 +33,12 @@ DEFAULTS = {
     "elevenlabs_api_key": "",
     "music_model": "music_v2_5",
     "channel_name": "Wander Tunes",
+    "look": "3d",
+    "reuse_chorus": True,
+    "auto_review": True,
+    "youtube_client_id": "",
+    "youtube_client_secret": "",
+    "youtube_refresh_token": "",
     "house_style": sv.HOUSE_STYLE,
     "character_guidelines": sv.CHARACTER_GUIDELINES,
     "aspect_ratio": "16:9",
@@ -53,7 +59,9 @@ DEFAULTS = {
     "narration_voice": "cgSgspJ2msm6clMCkdW9",
 }
 
-SECRET_KEYS = ("anthropic_api_key", "hf_key_id", "hf_key_secret", "elevenlabs_api_key")
+SECRET_KEYS = ("anthropic_api_key", "hf_key_id", "hf_key_secret", "elevenlabs_api_key",
+               "youtube_client_id", "youtube_client_secret", "youtube_refresh_token")
+OPEN_PATHS = ("/api/config", "/api/youtube/callback", "/api/tick")  # no app password: see each route
 SETTINGS_ID = "default"
 CHANNEL_ID = "channel"  # the channel's icon and animated intro, kept beside the settings
 
@@ -83,7 +91,7 @@ def settings(overrides=None):
 
 @app.before_request
 def gate():
-    if not APP_PASSWORD or not request.path.startswith("/api/") or request.path == "/api/config":
+    if not APP_PASSWORD or not request.path.startswith("/api/") or request.path in OPEN_PATHS:
         return None
     given = request.headers.get("X-App-Password", "")
     if not hmac.compare_digest(given.encode(), APP_PASSWORD.encode()):
@@ -207,13 +215,19 @@ def advance_character(s, c):
             store.delete_media([url])  # superseded by a newer request
             return
         q["job"], q["job_error"] = None, err
-        if url:
+        if url and q.pop("restyling", None):
+            # The old look's images step aside (kept, in case you switch back), and the body is redone to match.
+            q["old_images"], q["images"], q["needs_body"] = q["images"], [url], True
+        elif url:
             q["images"].append(url)
+        if url:
+            q["style"] = job.get("style") or q.get("style")
         add_event(q, f"Portrait of {q['name']}", ok=bool(url), error=err, kind="portrait")
     latest = update_doc("characters", c["id"], apply)
     # A new character's face comes first; its full-body reference is then matched to that face.
     if url and latest.get("needs_body") and not latest.get("job"):
         body_job = sv.image_job(s, sv.character_prompt(s, latest, "body"), latest["images"][:1], "3:4", best=True)
+        body_job["style"] = sv.look_of(s)
 
         def queue_body(q):
             q["job"], q["needs_body"] = body_job, False
@@ -227,7 +241,7 @@ def _locations(p):
 def advance_project(s, p, budget):
     """Collect finished Higgsfield jobs (up to budget[0]) and apply them to the latest project."""
     pid, results = p["id"], []
-    pending = [("thumb", None, p.get("thumb_job"))] + [
+    pending = [("thumb", None, job) for job in [p.get("thumb_job")] + (p.get("thumb_jobs") or [])] + [
         ("plate", loc["id"], loc.get("job")) for loc in _locations(p)] + [
         (kind, sc["n"], job) for sc in (p.get("plan") or {}).get("scenes", [])
         for kind, job in (sc.get("jobs") or {}).items()]
@@ -251,14 +265,20 @@ def advance_project(s, p, budget):
         scenes = {sc["n"]: sc for sc in (q.get("plan") or {}).get("scenes", [])}
         for kind, n, rid, url, err in results:
             if kind == "thumb":
-                if (q.get("thumb_job") or {}).get("request_id") != rid:
+                jobs = [j for j in [q.get("thumb_job")] + (q.get("thumb_jobs") or []) if j]
+                if rid not in [j["request_id"] for j in jobs]:
                     stale.append(url)
                     continue
-                q["thumb_job"], q["thumb_error"] = None, err
+                q["thumb_job"] = None
+                q["thumb_jobs"] = [j for j in (q.get("thumb_jobs") or []) if j["request_id"] != rid]
                 if url:
-                    stale.append(q.get("thumbnail"))
-                    q["thumbnail"] = url
-                add_event(q, "Thumbnail", ok=bool(url), error=err, kind="thumb")
+                    q["thumb_options"] = ((q.get("thumb_options") or []) + [url])[-6:]
+                    q["thumbnail"] = q.get("thumbnail") if q.get("thumbnail") in q["thumb_options"] else url
+                else:
+                    q["thumb_error"] = err
+                if not q["thumb_jobs"]:
+                    add_event(q, "Thumbnails", ok=bool(q.get("thumbnail")), error=None if q.get("thumbnail") else err,
+                              kind="thumb")
                 continue
             if kind == "plate":
                 loc = dr.location(q.get("plan") or {}, n)
@@ -285,13 +305,17 @@ def advance_project(s, p, budget):
                     sc.pop("review", None)  # a new clip needs a new look
             else:
                 sc.setdefault("errors", {})[kind] = err
+                sc.setdefault("tries", {})[kind] = (sc.get("tries") or {}).get(kind, 0) + 1
             what = "Keyframe" if kind == "image" else "Animation"
             add_event(q, f"{what} for scene {n}", ok=bool(url), error=err, kind=kind)
     update_doc("projects", pid, apply)
     store.delete_media(stale)
+    plan = (store.load_doc("projects", pid) or {}).get("plan") or {}
     for kind, n, rid, url, err in results:
-        if kind == "video" and url:
-            _try_preview(s, pid, n)
+        if kind == "video" and url:  # the shot itself, and every chorus repeat that reuses it
+            for sc in plan.get("scenes", []):
+                if sc["n"] == n or sc.get("reuse") == n:
+                    _try_preview(s, pid, sc["n"])
 
 
 def channel_doc():
@@ -336,8 +360,8 @@ def public_files(name):
 
 @app.get("/api/config")
 def config():
-    return jsonify(defaults=DEFAULTS, storage=store.storage_kind(),
-                   password_required=bool(APP_PASSWORD))
+    return jsonify(defaults={k: v for k, v in DEFAULTS.items() if k not in SECRET_KEYS},
+                   storage=store.storage_kind(), password_required=bool(APP_PASSWORD), looks=sv.LOOKS)
 
 
 TESTS = {
@@ -395,10 +419,24 @@ def settings_put():
             secrets[k] = str(v).strip()
         else:
             secrets.pop(k, None)
+    _save_settings(plain, secrets)
+    return jsonify(settings_view())
+
+
+def _save_settings(plain, secrets):
     store.save_doc("app_settings", {"id": SETTINGS_ID, "created": store.now(),
                                     "settings": plain, "secrets": vault.seal(secrets)})
     g.pop("saved", None)
-    return jsonify(settings_view())
+
+
+def save_secret(name, value):
+    plain, secrets, _ = saved_settings()
+    secrets = dict(secrets)
+    if value:
+        secrets[name] = value
+    else:
+        secrets.pop(name, None)
+    _save_settings(plain, secrets)
 
 
 @app.post("/api/prices")
@@ -495,7 +533,28 @@ def characters_delete_all():
     return jsonify(removed=len(cast))
 
 
+def restyle_character(s, c):
+    """Redraw a character in the current look from their existing portrait. Returns the saved character."""
+    if not c.get("images"):
+        raise sv.UserError(f"{c['name']} has no image to restyle. Generate a portrait first.")
+    if not c.get("icon"):
+        others = [o for o in store.list_docs("characters") if o["id"] != c["id"]]
+        c = update_doc("characters", c["id"], lambda q: q.update(icon=sv.find_icon(s, c, others)))
+    job = sv.image_job(s, sv.character_prompt(s, c, restyle=True), c["images"][:1], "3:4", best=True)
+    job["style"] = sv.look_of(s)
+
+    def apply(q):
+        q["job"], q["job_error"], q["restyling"] = job, None, True
+    return update_doc("characters", c["id"], apply)
+
+
+@app.post("/api/characters/<cid>/restyle")
+def characters_restyle(cid):
+    return jsonify(restyle_character(settings(), load_or_404("characters", cid)))
+
+
 def _new_character(fields, job, extra=None):
+    job["style"] = sv.look_of(settings())
     c = {"id": store.new_id("chr"), "created": store.now(), "images": [], "job": job, "needs_body": True,
          **{k: str(fields.get(k, "")).strip() for k in CHAR_FIELDS}, **(extra or {})}
     return store.save_doc("characters", c)
@@ -577,6 +636,8 @@ def characters_generate(cid):
     sheet = bool(body().get("sheet")) and bool(c["images"])
     shot = "sheet" if sheet else "body" if c["images"] else "headshot"
     job = sv.image_job(s, sv.character_prompt(s, c, shot), c["images"][:1], "16:9" if sheet else "3:4", best=True)
+    if shot == "headshot":
+        job["style"] = sv.look_of(s)
 
     def apply(q):
         q["job"], q["job_error"] = job, None
@@ -597,7 +658,7 @@ def activity():
     since = float(body().get("since") or 0)
     can_poll = bool(s.get("hf_key_id") and s.get("hf_key_secret"))
     budget = [MAX_COMPLETIONS_PER_POLL]
-    running, events, warnings = [], [], []
+    running, events, warnings, auto_on = [], [], [], []
 
     ch = store.load_doc("app_settings", CHANNEL_ID) or {}
     if can_poll and (ch.get("icon_job") or ch.get("clip_job")):
@@ -633,7 +694,7 @@ def activity():
             p = update_doc("projects", p["id"], lambda q: (q.pop("task", None), add_event(
                 q, label, False, "It stopped before finishing (it may have hit the server's "
                 "5-minute limit). Try again.", task["kind"])))
-        has_jobs = (p.get("thumb_job") or any(loc.get("job") for loc in _locations(p))
+        has_jobs = (p.get("thumb_job") or p.get("thumb_jobs") or any(loc.get("job") for loc in _locations(p))
                     or any(sc.get("jobs") for sc in (p.get("plan") or {}).get("scenes", [])))
         if has_jobs and can_poll and budget[0] > 0:
             try:
@@ -647,9 +708,13 @@ def activity():
             running.append({**base, "key": f"prj:{p['id']}:{p['task']['kind']}",
                             "label": p["task"]["label"], "started": p["task"]["started"],
                             "done": p["task"].get("done"), "total": p["task"].get("total")})
-        if p.get("thumb_job"):
-            running.append({**base, "key": f"prj:{p['id']}:thumb", "label": "Thumbnail",
-                            "started": p["thumb_job"].get("submitted")})
+        thumbs = [j for j in [p.get("thumb_job")] + (p.get("thumb_jobs") or []) if j]
+        if thumbs:
+            running.append({**base, "key": f"prj:{p['id']}:thumb", "label": "Thumbnails",
+                            "started": thumbs[0].get("submitted")})
+        if (p.get("auto") or {}).get("on"):
+            auto_on.append({"id": p["id"], "title": title, "status": p["auto"].get("status") or "",
+                            "progress": sync.progress(p)})
         for loc in _locations(p):
             if loc.get("job"):
                 running.append({**base, "key": f"prj:{p['id']}:plate:{loc['id']}",
@@ -663,7 +728,7 @@ def activity():
                    for e in p.get("events", []) if e["ts"] > since]
 
     events.sort(key=lambda e: e["ts"])
-    return jsonify(running=running, events=events[-20:], now=time.time(),
+    return jsonify(running=running, events=events[-20:], now=time.time(), auto=auto_on,
                    warning=warnings[0] if warnings else None)
 
 
@@ -722,11 +787,14 @@ def projects_list():
         plan = p.get("plan") or {}
         thumb = p.get("thumbnail") or next(
             (sc.get("image") for sc in plan.get("scenes", []) if sc.get("image")), None)
-        busy = (bool(task_running(p)) + bool(p.get("thumb_job")) + sum(bool(loc.get("job")) for loc in _locations(p))
+        busy = (bool(task_running(p)) + bool(p.get("thumb_job")) + len(p.get("thumb_jobs") or []) + sum(bool(loc.get("job")) for loc in _locations(p))
                 + sum(len(sc.get("jobs") or {}) for sc in plan.get("scenes", [])))
         out.append({"id": p["id"], "title": plan.get("title") or p["brief"].get("topic"),
                     "created": p["created"], "thumb": thumb, "final": bool(p.get("final")),
-                    "scenes": len(plan.get("scenes", [])), "busy": busy})
+                    "scenes": len(plan.get("scenes", [])), "busy": busy,
+                    "auto": (p.get("auto") or {}).get("status") if (p.get("auto") or {}).get("on") else None,
+                    "progress": sync.progress(p),
+                    "youtube": (p.get("youtube") or {}).get("url")})
     return jsonify(out)
 
 
@@ -742,7 +810,8 @@ def projects_create():
 
 @app.get("/api/projects/<pid>")
 def projects_get(pid):
-    return jsonify(load_or_404("projects", pid))
+    p = load_or_404("projects", pid)
+    return jsonify({**p, "progress": sync.progress(p)})
 
 
 @app.put("/api/projects/<pid>")
@@ -779,7 +848,8 @@ def projects_update(pid):
 @app.delete("/api/projects/<pid>")
 def projects_delete(pid):
     p = load_or_404("projects", pid)
-    urls = [p.get("thumbnail"), p.get("final"), (p.get("song") or {}).get("url")]
+    urls = [p.get("thumbnail"), p.get("final"), p.get("short"), (p.get("song") or {}).get("url")]
+    urls += p.get("thumb_options") or []
     for sc in (p.get("plan") or {}).get("scenes", []):
         urls += [sc.get("image"), sc.get("video"), (sc.get("preview") or {}).get("url")]
     urls += [loc.get("image") for loc in ((p.get("plan") or {}).get("direction") or {}).get("locations", [])]
@@ -802,7 +872,11 @@ def projects_write(pid):
 
 
 def _cast_of(p):
-    return cast_for(p["brief"].get("cast", []))
+    return sv.dressed(cast_for(p["brief"].get("cast", [])), p.get("plan"))
+
+
+def _scene_cast(p, sc):
+    return sv.dressed(cast_for(sc["cast"]), p.get("plan"))
 
 
 @app.post("/api/projects/<pid>/choreograph")
@@ -950,9 +1024,10 @@ def _fit_to_song(s, pid, p):
             return
         q["song"].update(words=heard, timing=lines, timing_key=sync.timing_key(lines))
         moved = set(sync.fit_scenes(q["plan"], lines, song["duration"], cast_ids))
+        sync.mark_reuse(q["plan"], lines, s.get("reuse_chorus") not in (False, "false", "0"))
         stale = []
         for sc in q["plan"]["scenes"]:
-            if sc["n"] in moved and (sc.get("video") or sc.get("preview")):
+            if (sc["n"] in moved or sc.get("reuse")) and (sc.get("video") or sc.get("preview")):
                 stale += [sc.pop("video", None), (sc.pop("preview", None) or {}).get("url")]
                 sc.pop("review", None)
         store.delete_media(stale)
@@ -985,26 +1060,30 @@ def _set_scene_job(pid, n, kind, job):
     return update_doc("projects", pid, apply)
 
 
-@app.post("/api/projects/<pid>/scenes/<int:n>/image")
-def scene_image(pid, n):
-    s = settings()
-    p = load_or_404("projects", pid)
+def submit_image(s, pid, p, n):
     sc = _scene(p, n)
+    if sc.get("reuse"):
+        raise sv.UserError(f"Scene {n} reuses scene {sc['reuse']}'s shot. Redo that one instead.")
     look = (p["plan"].get("direction") or {}).get("look")
     where = dr.location(p["plan"], (sc.get("direction") or {}).get("location"))
-    prompt, refs = sv.scene_image_prompt(s, sc, cast_for(sc["cast"]), look, where, _cast_of(p))
-    return jsonify(_set_scene_job(pid, n, "image", sv.image_job(s, prompt, refs, s["aspect_ratio"])))
+    prompt, refs = sv.scene_image_prompt(s, sc, _scene_cast(p, sc), look, where, _cast_of(p))
+    return _set_scene_job(pid, n, "image", sv.image_job(s, prompt, refs, s["aspect_ratio"]))
 
 
-@app.post("/api/projects/<pid>/scenes/<int:n>/video")
-def scene_video(pid, n):
-    s = settings()
-    p = load_or_404("projects", pid)
+@app.post("/api/projects/<pid>/scenes/<int:n>/image")
+def scene_image(pid, n):
+    return jsonify(submit_image(settings(), pid, load_or_404("projects", pid), n))
+
+
+def submit_video(s, pid, p, n, with_song=True):
+    """with_song=False animates without the song slice: no lip-sync, for a shot a model's filter refuses."""
     sc = _scene(p, n)
+    if sc.get("reuse"):
+        raise sv.UserError(f"Scene {n} reuses scene {sc['reuse']}'s shot. Re-animate that one instead.")
     if not sc.get("image"):
         raise sv.UserError(f"Scene {n} needs a keyframe image first.")
     audio = None
-    if p.get("song") and sv.video_mode(s) in ("seedance_ref", "wan_i2v"):
+    if with_song and p.get("song") and sv.video_mode(s) in ("seedance_ref", "wan_i2v"):
         # The scene's exact slice of the song: the model lip-syncs and dances to it.
         clip = sv.audio_slice_wav(_song_file(p), sc["start"], sc["end"])
         with open(clip, "rb") as f:
@@ -1012,8 +1091,13 @@ def scene_video(pid, n):
         os.remove(clip)
     review = sc.get("review") or {}
     note = review.get("note", "") if review.get("status") == "declined" else ""
-    job = sv.video_job(s, sc, cast_for(sc["cast"]), audio, p["plan"].get("bpm"), _cast_of(p), note)
-    return jsonify(_set_scene_job(pid, n, "video", job))
+    job = sv.video_job(s, sc, _scene_cast(p, sc), audio, p["plan"].get("bpm"), _cast_of(p), note)
+    return _set_scene_job(pid, n, "video", job)
+
+
+@app.post("/api/projects/<pid>/scenes/<int:n>/video")
+def scene_video(pid, n):
+    return jsonify(submit_video(settings(), pid, load_or_404("projects", pid), n))
 
 
 # ------------------------------------------------------------------ scene previews and review
@@ -1041,17 +1125,19 @@ def _preview_spec(s, p):
 
 def preview_key(s, p, sc):
     captions, tkey, kbps = _preview_spec(s, p)
-    return sync.preview_key(sc, tkey, captions, s["aspect_ratio"], kbps)
+    return sync.preview_key(sync.media_scene(p["plan"], sc), tkey, captions, s["aspect_ratio"], kbps)
 
 
 def _build_preview(s, pid, p, sc):
     """Build and store one scene's preview; returns the project as saved."""
     captions, tkey, kbps = _preview_spec(s, p)
+    sc = sync.media_scene(p["plan"], sc)
     key = sync.preview_key(sc, tkey, captions, s["aspect_ratio"], kbps)
     ass = None
-    if captions:
+    if (captions or sync.card_of(sc)) and sv.captions_supported():
         w, h = sv.frame_size(s["aspect_ratio"])
-        ass = sync.write_captions(p["song"]["timing"], w, h, store.tmp_path("lyrics.ass"))
+        ass = sync.write_captions(p["song"]["timing"] if captions else [], w, h, store.tmp_path("lyrics.ass"),
+                                  p["plan"]["scenes"])
     out = sync.build_preview(sc, _song_file(p) if p.get("song") else None, ass, s["aspect_ratio"], kbps,
                              store.tmp_path(f"preview{sc['n']}.mp4"))
     with open(out, "rb") as f:
@@ -1114,24 +1200,39 @@ def scene_review(pid, n):
             raise sv.UserError(f"Scene {n}'s preview is out of date. Wait for the new one, then approve it.")
         sc["review"] = {"status": "approved" if decision == "approve" else "declined", "key": key,
                         "note": note, "at": store.now()}
+        if decision == "decline":  # a person's decline is always remade, and a chorus repeat sends back its original
+            sc["remakes"] = 0
+            if sc.get("reuse"):
+                src = _scene(q, sc["reuse"])
+                src["review"], src["remakes"] = {**sc["review"], "key": (src.get("preview") or {}).get("key")}, 0
     return jsonify(update_doc("projects", pid, apply))
+
+
+def submit_thumbnails(s, pid, p):
+    plan = p.get("plan") or abort(400, "Write the song first.")
+    cast = _cast_of(p)
+    refs, legend = sv.cast_refs(s, cast, per_character=1)
+    jobs = [sv.image_job(s, sv.thumbnail_prompt(s, plan, cast, legend, take), refs, "16:9", best=True)
+            for take in range(len(sv.THUMBNAIL_TAKES))]
+
+    def apply(q):
+        q["thumb_jobs"], q["thumb_error"] = (q.get("thumb_jobs") or []) + jobs, None
+    return update_doc("projects", pid, apply)
 
 
 @app.post("/api/projects/<pid>/thumbnail")
 def projects_thumbnail(pid):
-    s = settings()
-    p = load_or_404("projects", pid)
-    plan = p.get("plan") or abort(400, "Write the song first.")
-    cast = cast_for(p["brief"].get("cast", []))
-    refs, legend = sv.cast_refs(s, cast, per_character=1)
-    prompt = (f"{sv.style_prefix(s, cast)}YouTube thumbnail for a kids' music video: "
-              f"{plan['thumbnail_prompt']} " + (f"Characters: {'; '.join(legend)}. " if legend else "")
-              + f"Big bold rounded playful title text reading \"{plan['thumbnail_text']}\", "
-              "high contrast, very readable at small size.")
-    job = sv.image_job(s, prompt, refs, "16:9")
+    return jsonify(submit_thumbnails(settings(), pid, load_or_404("projects", pid)))
+
+
+@app.post("/api/projects/<pid>/thumbnail/pick")
+def projects_thumbnail_pick(pid):
+    url = body().get("url")
 
     def apply(q):
-        q["thumb_job"], q["thumb_error"] = job, None
+        if url not in (q.get("thumb_options") or []):
+            raise sv.UserError("That thumbnail isn't one of this video's options.")
+        q["thumbnail"] = url
     return jsonify(update_doc("projects", pid, apply))
 
 
@@ -1255,6 +1356,9 @@ def _progress(pid, done, total, last=[0.0]):  # noqa: B006 - a deliberate per-pr
             q["task"].update(done=done, total=total)
     update_doc("projects", pid, apply)
 
+
+import pipeline  # noqa: E402,F401  (adds the server-side "do everything" routes)
+import youtube  # noqa: E402,F401
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5178"))

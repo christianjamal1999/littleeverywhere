@@ -87,12 +87,57 @@ def is_adult(c):
     return c.get("kind") == "adult"
 
 
+STYLE_3D = ("Frame from a big-budget 3D animated family film: stylized, appealing toddler characters with slightly "
+            "large expressive eyes, round soft faces, smooth softly shaded skin with a warm rosy glow, sculpted "
+            "hair with visible strands, and richly detailed fabric textures; physically based rendering, soft "
+            "warm sunlight with gentle rim light, glowing saturated candy colors, shallow depth of field with "
+            "creamy bokeh, crisp focus on the eyes. Always this same 3D animated look; never a photograph of "
+            "real children, never flat 2D cartoon, never anime")
+
+GUIDELINES_3D = """\
+ALLOWED
+- Original stylized 3D animated children aged 3-6 with cute toddler proportions, or the 3D animated version of a real child whose parent or guardian gave consent in the New Character form.
+- One signature item per character (a hat, hair clip, headband, scarf) that they wear in every video, and one signature outfit; a holiday costume may replace the outfit but always keeps the signature item, hair and face.
+- Correct, appealing faces: two matching eyes with catchlights, natural eyebrows, a small nose, two matching ears, small even baby teeth.
+- Genuine big smiles and laughter, exaggerated fun expressions.
+- Modest everyday children's clothes that fully cover the body; colorful and cultural prints shown respectfully.
+- Wheelchairs and hearing aids shown naturally. Playing, dancing, singing, toy instruments, friendly animals.
+NOT ALLOWED
+- Photorealistic real-looking children, or the likeness of any real child without that consent, of any other real person, or another channel's or film's characters.
+- Adult styling on children: makeup, glossy lips, glamour or posed-model looks.
+- Swimwear, underwear, sleepwear, bare midriffs or revealing clothes, even at the beach or pool.
+- Anything scary, violent or unsafe.
+- Text, logos, watermarks, extra fingers, distorted faces, fused or too many teeth, mismatched eyes or ears."""
+
+LOOKS = {"3d": "3D animated (like the top kids' music channels)", "photo": "Photoreal children",
+         "custom": "Custom (the two boxes below)"}
+
+
+def look_of(settings):
+    look = settings.get("look")
+    return look if look in LOOKS else "3d"
+
+
+def house_style(settings):
+    look = look_of(settings)
+    if look == "custom":
+        return settings.get("house_style") or HOUSE_STYLE
+    return STYLE_3D if look == "3d" else HOUSE_STYLE
+
+
+def guidelines(settings):
+    look = look_of(settings)
+    if look == "custom":
+        return settings.get("character_guidelines") or CHARACTER_GUIDELINES
+    return GUIDELINES_3D if look == "3d" else CHARACTER_GUIDELINES
+
+
 def style_prefix(settings, cast=()):
     """What every generated image of the cast must follow."""
-    rules = settings.get('character_guidelines') or CHARACTER_GUIDELINES
+    rules = guidelines(settings)
     if any(is_adult(c) for c in cast):
         rules += "\n" + ADULT_GUIDELINES
-    return f"{settings['house_style']}.\n{rules}\nSCENE: "
+    return f"{house_style(settings)}.\n{rules}\nSCENE: "
 
 
 # ============================================================== spend tracking
@@ -221,15 +266,21 @@ IDEAS_SCHEMA = {
     }}},
 }
 
-LOOK_FIELDS = ["name", "age", "look", "face", "outfit", "personality", "signature", "mannerisms"]
+LOOK_FIELDS = ["name", "age", "look", "face", "icon", "outfit", "personality", "signature", "mannerisms"]
+ICON_GUIDE = """\
+icon: the ONE signature item that makes this character recognizable at a glance in every video, worn on or near
+the head so it shows in close-ups: e.g. "a crown of big yellow sunflowers", "a green-and-white trucker cap with
+a pine tree on the front", "a round pink daisy clip above the left ear". Bold, simple, one or two colors, and
+different from every other cast member's item."""
 FACE_GUIDE = """\
 face: an exact, literal description that makes this one child recognizable, covering in order: face shape;
 eyes (color, shape, size, spacing); eyebrows (color, thickness, arch); nose (bridge, tip, nostrils); ears
 (size, shape, how far they stick out, any earrings); mouth and lips; teeth when smiling (gaps, missing baby
 teeth, size); skin tone and any freckles or marks and exactly where they sit; hair (color, texture, length,
 part, style). Plain visual facts only, no comparisons to anyone.
+{ICON}
 mannerisms: 3-4 quick physical habits that make this child move like a real kid (e.g. "bounces on her toes
-when excited, tilts her head left when she sings, scrunches her nose when she giggles")."""
+when excited, tilts her head left when she sings, scrunches her nose when she giggles").""".replace("{ICON}", ICON_GUIDE)
 BIBLE_FIELDS = ["voice", "likes", "friends", "growth"]
 CHARACTER_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -292,9 +343,35 @@ def claude_json(settings, system, prompt, schema, what="Claude request"):
     return json.loads(text)
 
 
+def wearing(c):
+    icon = f"always wearing their signature {c['icon'].rstrip('. ')}; " if c.get("icon") else ""
+    return f"{icon}wearing {c.get('costume') or c.get('outfit', '')}"
+
+
 def character_line(c):
     who = "an adult, " if is_adult(c) else ""
-    return f"{c['name']} ({who}age {c.get('age') or '?'}): {c.get('look', '')}; wearing {c.get('outfit', '')}"
+    return f"{c['name']} ({who}age {c.get('age') or '?'}): {c.get('look', '')}; {wearing(c)}"
+
+
+def dressed(cast, plan):
+    """The cast as they appear in this video: a holiday costume from the creative director replaces the outfit."""
+    costumes = {x["name"]: x["costume"] for x in ((plan or {}).get("direction") or {}).get("costumes", [])
+                if x.get("costume")}
+    return [{**c, "costume": costumes[c["name"]]} if c["name"] in costumes else c for c in cast]
+
+
+def find_icon(settings, c, others):
+    """A signature item for a character that doesn't have one yet."""
+    taken = "\n".join(f"- {o['name']}: {o['icon']}" for o in others if o.get("icon")) or "- none yet"
+    prompt = f"""Give this recurring cast member a signature item.
+{c['name']}: {c.get('look', '')} Outfit: {c.get('outfit', '')} Personality: {c.get('personality', '')}
+Items already taken by the rest of the cast:
+{taken}
+{ICON_GUIDE}
+If their look or outfit already includes such an item (hair bows, a cap, a headband), use that."""
+    schema = {"type": "object", "additionalProperties": False, "required": ["icon"],
+              "properties": {"icon": {"type": "string"}}}
+    return claude_json(settings, CHANNEL_PLAYBOOK, prompt, schema, "Signature item")["icon"].strip()
 
 
 def hair_of(c):
@@ -326,7 +403,7 @@ def without_absent(text, cast, everyone):
 
 def identity_lock(cast):
     """The per-character facial facts that must match in every image."""
-    lines = [f"{c['name']}: {c.get('face') or c.get('look', '')}; wearing {c.get('outfit', '')}" for c in cast]
+    lines = [f"{c['name']}: {c.get('face') or c.get('look', '')}; {wearing(c)}" for c in cast]
     if not lines:
         return ""
     return ("IDENTITY LOCK, the most important instruction: each person must be unmistakably the same real person as "
@@ -379,6 +456,11 @@ Requirements:
   like "two fast knee bounces, claps above her head, spins once and points at the camera", never just "dances".
   Use each character's mannerisms. camera: a simple camera move. cast: ids of characters in shot.
   singers: ids of the characters singing the words in that shot (empty for instrumental shots).
+  Every chorus is cut into the same shots in the same order with the same lyric split, cast and singers,
+  because the chorus is animated once and reused each time it comes back.
+  About half the shots are a single character alone, which is what a close-up needs. A shot with no cast
+  at all (an animal, hands clapping, feet stomping, a prop) is a welcome cutaway once or twice per verse;
+  give it no singers.
   Every shot with words is a medium close-up of its 1-2 singers facing the camera with their mouths clearly
   visible, because lip-sync only works on faces that are large and turned toward the viewer.
   Most shots should show just 1-3 characters, which animate far more cleanly. Use the full cast only
@@ -593,7 +675,7 @@ signature: a catchphrase or signature dance move.
 {BIBLE_GUIDE}
 
 Every look and outfit must follow these rules:
-{settings.get('character_guidelines') or CHARACTER_GUIDELINES}"""
+{guidelines(settings)}"""
     return claude_json(settings, CHANNEL_PLAYBOOK, prompt, CHARACTER_SCHEMA, "Character design")
 
 
@@ -623,7 +705,7 @@ Existing cast, for friendships:
 {_cast_summary(existing)}
 
 The character must follow these rules:
-{settings.get('character_guidelines') or CHARACTER_GUIDELINES}
+{guidelines(settings)}
 {ADULT_GUIDELINES if adult else ""}"""
     images = [{"type": "image", "source": {"type": "base64", "media_type": ctype,
                                            "data": base64.b64encode(data).decode()}} for data, ctype in photos]
@@ -750,6 +832,14 @@ def hf_poll(settings, job):
     return status, None, None
 
 
+def low_balance(error):
+    return bool(error) and any(x in str(error).lower() for x in ("balance", "top up", "insufficient"))
+
+
+def content_blocked(error):
+    return bool(error) and any(x in str(error).lower() for x in ("copyright", "moderation", "blocked", "nsfw", "policy"))
+
+
 def image_job(settings, prompt, ref_urls, aspect_ratio, best=False):
     """best: the highest quality, for the few images every later scene is matched against."""
     body = {"prompt": prompt, "aspect_ratio": aspect_ratio,
@@ -818,28 +908,42 @@ def cast_refs(settings, cast, per_character=2, max_refs=MAX_SEPARATE_REFS):
         f"reference image 1 is a lineup of the {len(cast)} characters, {order}: {who}"]
 
 
-def character_prompt(settings, c, shot="headshot", photos=0):
+def character_prompt(settings, c, shot="headshot", photos=0, restyle=False):
     """headshot: the master reference for the face. body and sheet are matched to reference image 1.
-    photos: how many photos of the real person come first in the references, for their AI version."""
+    photos: how many photos of the real person come first in the references, for their AI version.
+    restyle: reference image 1 is this character in another visual style; redraw them in the current one."""
     who = "person" if is_adult(c) else "child"
-    base = f"{style_prefix(settings, [c])}{identity_lock([c])}Photo of {character_line(c)}. "
+    animated = look_of(settings) == "3d"
+    kind = "3D animated character portrait" if animated else "Photo"
+    base = f"{style_prefix(settings, [c])}{identity_lock([c])}{kind} of {character_line(c)}. "
     if photos:
         refs = "Reference image 1 is a photo" if photos == 1 else f"Reference images 1-{photos} are photos"
-        base += (f"{refs} of this real {who}. Make a new photo of the very same {who}: an exact likeness that "
-                 "their family would recognize instantly, keeping the face shape, eyes, eyebrows, nose, ears, "
-                 "mouth, teeth, skin tone, freckles, marks and hair exactly as in the photos, at the same age. "
-                 "Do not beautify, slim, smooth or restyle them. Only the clothes, background and lighting are "
-                 "new. ")
+        if animated:
+            base += (f"{refs} of this real {who}. Make the 3D animated film version of this very same {who}: "
+                     "instantly recognizable to their family, keeping the face shape, eye color and shape, "
+                     "eyebrows, nose, ears, smile, teeth, skin tone, freckles, marks and hair exactly, at the "
+                     "same age, translated into the animated style. ")
+        else:
+            base += (f"{refs} of this real {who}. Make a new photo of the very same {who}: an exact likeness "
+                     "that their family would recognize instantly, keeping the face shape, eyes, eyebrows, nose, "
+                     "ears, mouth, teeth, skin tone, freckles, marks and hair exactly as in the photos, at the "
+                     "same age. Do not beautify, slim, smooth or restyle them. Only the clothes, background and "
+                     "lighting are new. ")
+    if restyle:
+        base += (f"Reference image 1 shows this same {who} in a different visual style. Redraw them in the style "
+                 "described above, keeping the face shape, eye color, eyebrows, nose, ears, smile, teeth, skin "
+                 "tone, freckles, hair color, hairstyle and outfit recognizably the same. ")
     if shot == "sheet":
         return (base + "Turnaround sheet on a clean white background: front, three-quarter and side views plus "
                 "three expressions (happy, surprised, laughing), both ears visible in the side view, identical "
                 "face, outfit and proportions in every view. Match reference image 1 exactly. No text.")
     if shot == "body":
-        return (base + "Full-body photo, friendly natural pose, softly blurred sunny outdoor background, centered, "
-                f"the exact same {who} as reference image 1. No text.")
+        return (base + "Full-body view, friendly natural pose, softly blurred sunny outdoor background, centered, "
+                f"the exact same {who} as reference image 1, signature item clearly visible. No text.")
     return (base + "Head and shoulders portrait, facing the camera straight on, eyes open and looking into the lens, "
-            "a natural open-mouth smile showing the teeth, both ears visible, hair clear of the face, even soft "
-            "daylight, plain softly blurred background, tack-sharp focus on the face. No text.")
+            "a natural open-mouth smile showing the teeth, both ears visible, hair clear of the face, the "
+            "signature item clearly visible, even soft daylight, plain softly blurred background, tack-sharp "
+            "focus on the face. No text.")
 
 
 def _direction_text(scene, look, cast=(), everyone=()):
@@ -877,6 +981,26 @@ def scene_image_prompt(settings, scene, cast, look=None, location=None, everyone
               + (f"References: {who}. " if who else "")
               + f"{framing}, no text, no watermark.")
     return prompt, refs
+
+
+THUMBNAIL_TAKES = [
+    ("One face", "One cast member's face fills a third of the frame in the foreground with a huge exaggerated "
+                 "expression (wide eyes, open mouth), the scene's key object or animal right beside them."),
+    ("Funny moment", "Two cast members in a funny, high-emotion moment about the song's topic (a playful tug, a "
+                     "shared surprise, a proud grin), faces large and close together."),
+    ("Dance party", "The whole cast mid-dance in a row, full of energy, with the title in big glossy 3D bubble "
+                    "letters across the top."),
+]
+
+
+def thumbnail_prompt(settings, plan, cast, legend, take):
+    name, framing = THUMBNAIL_TAKES[take % len(THUMBNAIL_TAKES)]
+    title = (f"Big glossy 3D bubble-letter title reading \"{plan['thumbnail_text']}\", spelled exactly. "
+             if name == "Dance party" else "No text. ")
+    return (f"{style_prefix(settings, cast)}{identity_lock(cast)}YouTube thumbnail for a kids' music video. "
+            f"{plan['thumbnail_prompt']} {framing} " + (f"Characters: {'; '.join(legend)}. " if legend else "")
+            + title + "Hyper-saturated colors, bright rim light, extremely high contrast, simple readable "
+            "composition that works at phone size.")
 
 
 def icon_job(settings):
@@ -973,6 +1097,8 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
     hair = " ".join(f"{c['name']}'s hair stays exactly like this in every frame: {hair_of(c)}"
                     for c in cast if hair_of(c))
+    hair += " " + " ".join(f"{c['name']} keeps wearing {c['icon'].rstrip('. ')} for the whole shot."
+                           for c in cast if c.get("icon"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""
     motion = (f"{KEEP_IDENTITY} {head_count(cast)} {hair} {LIVELY} {tempo}{_shot_motion(scene, cast, everyone)} "
               f"{habits} {_sung_direction(scene, cast)} Smooth, steady camera; every face sharp and in focus. "

@@ -314,3 +314,18 @@ table.data td .muted { font-size: 12px; }
 .chip.declined { background: rgba(210,60,60,.14); color: #d24b4b; border-color: rgba(210,60,60,.4); }
 .scene.is-approved { border-color: rgba(46,160,90,.5); }
 .scene.is-declined { border-color: rgba(210,60,60,.5); }
+
+/* do everything: progress on every screen */
+.bar { height: 8px; border-radius: 99px; background: var(--sunken); overflow: hidden; margin: 6px 0 4px; }
+.bar i { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .6s; }
+#auto-bars { display: grid; gap: 8px; margin-bottom: 14px; }
+.auto-bar { display: block; width: 100%; text-align: left; padding: 10px 14px; background: var(--surface); border: 1px solid var(--primary); border-radius: var(--radius); font-size: 13.5px; }
+.auto-bar .muted { font-size: 12.5px; }
+.card-bar { margin: 0 14px 12px; font-size: 12.5px; }
+.banner.stop { border-color: rgba(210,60,60,.6); }
+.thumb-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+.thumb-pick { padding: 0; border: 2px solid transparent; border-radius: var(--radius-sm); overflow: hidden; display: block; }
+.thumb-pick.on { border-color: var(--primary); }
+.thumb-pick img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
+video.short { max-height: 420px; aspect-ratio: 9/16; border-radius: var(--radius-sm); }
+.ok { color: var(--ok); }

@@ -26,6 +26,7 @@
 </header>
 
 <main>
+  <div id="auto-bars" hidden></div>
   <!-- ======================= DASHBOARD ======================= -->
   <section id="tab-dashboard" class="tab">
     <div class="row between page-head">
@@ -47,9 +48,10 @@
     <div id="studio-list">
       <div class="row between">
         <h1>Your videos</h1>
-        <button class="primary" id="new-video">+ New video</button>
+        <div class="row"><button id="new-compilation">Make a compilation</button><button class="primary" id="new-video">+ New video</button></div>
       </div>
       <div id="projects" class="grid cards"></div>
+      <div id="compilations"></div>
     </div>
     <div id="studio-editor" hidden></div>
   </section>
@@ -205,12 +207,34 @@
           </div>
         </div>
         <div class="intro-preview" id="intro-preview" hidden></div>
+        <label>Look of every video
+          <select name="look">
+            <option value="3d">3D animated: stylized toddlers with film lighting, like the top kids' music channels</option>
+            <option value="photo">Photoreal children</option>
+            <option value="custom">Custom: use the two boxes below</option>
+          </select>
+        </label>
+        <p class="hint">Characters drawn in another look get a "Redraw" button, and Do everything redraws them for you.</p>
+        <label class="check"><input type="checkbox" name="reuse_chorus"> Animate the chorus once and reuse it each time it repeats (saves about a third of the animation cost)</label>
+        <label class="check"><input type="checkbox" name="auto_review"> Check every scene automatically: Claude looks for extra people, changed hair or signature items, warped faces and blur, approves clean scenes and has bad ones remade</label>
+        <details class="fold"><summary>Custom look</summary>
         <label>House visual style (added to every image prompt)
           <textarea name="house_style" rows="3"></textarea>
         </label>
         <label>Character guidelines (what's allowed and not allowed in every image of your cast)
           <textarea name="character_guidelines" rows="16"></textarea>
         </label>
+        </details>
+      </fieldset>
+      <fieldset>
+        <legend>YouTube (optional)</legend>
+        <p class="hint">Publish finished videos in one click. One-time setup in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>: create a project, enable "YouTube Data API v3", set up the OAuth consent screen (add yourself as a test user), then create an OAuth client ID of type "Web application" with this authorized redirect URI: <code id="yt-redirect"></code></p>
+        <div class="two">
+          <label>OAuth client ID <input type="password" name="youtube_client_id" autocomplete="off"></label>
+          <label>OAuth client secret <input type="password" name="youtube_client_secret" autocomplete="off"></label>
+        </div>
+        <div class="row"><button type="button" class="small primary" id="yt-connect">Connect YouTube</button><button type="button" class="small ghost danger" id="yt-disconnect" hidden>Disconnect</button><span class="muted" id="yt-status"></span></div>
+        <p class="hint">Google keeps uploads from a new API project private until the project passes its audit; schedule or flip them to public in YouTube Studio if that applies to you.</p>
       </fieldset>
       <div class="row">
         <button class="primary" type="submit">Save settings</button>

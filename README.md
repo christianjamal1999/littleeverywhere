@@ -13,7 +13,9 @@ Make kids' music videos (the Music Travel Kids format) with a reusable cast.
 8. **Review**: each clip becomes a preview cut frame-exact to its place in the song, with that slice of the song and the sing-along captions. Approve or decline it (say what's wrong and the remake is told to fix it).
 9. **Render**: the approved previews are joined exactly as they are (no re-encoding) under the whole song, so the finished video is what you approved. Captions are karaoke-style in Fredoka Bold. *Render a draft* works any time.
 
-**▶ Do everything** at the top of a video runs every step, waits for your approvals, remakes what you decline and renders once everything is approved (keep the video open while it runs).
+**▶ Do everything** runs the whole pipeline on the server (`pipeline.py`): one step per call to `/api/tick`, which Vercel's cron hits every minute and any open tab nudges, so you can close the browser. It redraws the cast in the current look, writes, composes (again if lyric lines are missing from the song), choreographs, directs, paints, animates in waves of 8, has Claude check frames of every clip (extra people, hair, signature items, warped faces, blur) and remakes failures up to twice, makes three thumbnails, renders, and cuts a vertical Short. It stops with a plain message when the Higgsfield balance runs out or something fails three times. A progress bar shows on every screen.
+
+**Look**: Settings → *Look of every video* (3D animated by default, photoreal, or custom). Each character has a **signature item** worn in every video. **Chorus reuse** animates each chorus shot once. **Publishing**: connect YouTube in Settings (your own Google OAuth client) to upload the video and its Short with metadata, thumbnail, made-for-kids and altered-content flags, optionally scheduled. *Make a compilation* joins rendered videos.
 
 **Settings** has a *Test connection* button for each key and a *Check server* button (ffmpeg, caption support, storage).
 
