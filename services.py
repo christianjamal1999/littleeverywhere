@@ -466,8 +466,10 @@ Recurring cast available (use their exact ids in scene.cast; feature everyone ac
 {roster}
 
 Keep the cast in character, using their story bible: work in signature moves and catchphrases
-(as call-and-response where it fits), use their likes as props or verses, show their friendships
-on screen, and where it suits the topic give one character a small moment tied to their growth.
+(as call-and-response where it fits), show their friendships on screen, and where it suits the topic
+give one character a small moment tied to their growth. Keep the characters simple: their hands are
+empty and free to dance. Nobody carries a favorite object, snack or toy through the video; a prop
+appears only in the one shot whose lyric is about it, and a "like" earns at most one line of the song.
 
 Requirements:
 - sections: in song order (Intro, Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus, Outro...).
@@ -739,7 +741,7 @@ Existing cast (make this one visually and personality-wise distinct):
 look: hair, skin tone, face, build - concrete visual details an image model can follow.
 {FACE_GUIDE}
 outfit: a signature outfit that stays the same in every video. age: e.g. "5".
-signature: a catchphrase or signature dance move.
+signature: a catchphrase or signature dance move, never an object they carry around.
 {BIBLE_GUIDE}
 
 Every look and outfit must follow these rules:
@@ -1167,6 +1169,7 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
     hair = " ".join(f"{c['name']}'s hair stays exactly like this in every frame: {hair_of(c)}"
                     for c in cast if hair_of(c))
+    hair += " Everyone's hands are empty unless this shot's action names something they hold."
     hair += " " + " ".join(f"{c['name']} keeps wearing {c['icon'].rstrip('. ')} for the whole shot."
                            for c in cast if c.get("icon"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""

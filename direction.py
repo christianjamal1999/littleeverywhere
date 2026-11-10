@@ -170,7 +170,8 @@ Write:
   palette: the video's overall color palette. lighting: the overall lighting approach. lens: the lenses
   and depth of field. wardrobe: the rule that every cast member wears exactly their signature item and
   signature outfit from the cast list in every shot (or their costume from the costumes list below, when
-  there is one), with no other changes, plus any prop someone carries throughout.
+  there is one), with no other changes, and that hands are empty: nobody carries an object through the
+  video.
 - locations: 2-4 sets, few enough that each one is seen several times and stays recognizable. Prefer
   bright, sunny, safe outdoor or cozy indoor places that suit the lyrics. One of them is the chorus stage:
   a glossy, colorful dance floor in the video's theme with glowing lights behind it (a barn-party stage for
@@ -241,13 +242,16 @@ For every shot write:
 - keyframe: the exact first frame for the image model, 60-100 words: the framing, where each person is and
   their pose and expression at second 0, and which of the set's landmarks are visible and where. Name the
   cast but don't describe their faces or outfits; references handle that.
-- continuity: what must match the neighbouring shots: props in hands, positions, light, weather.
+- continuity: what must match the neighbouring shots: positions, light, weather.
 - card: almost always empty. Only when the shot teaches one thing to read or count (a number, a color, an
   animal's name, a place), the 1-3 words to pop up on screen, like "RED", "1 2 3" or "Golden Gate Bridge".
 Only the cast listed as "in shot" may be seen or mentioned in that shot's notes: never write who is out of
 frame, hiding or off-screen. Frame a shot of one person centered (two people: left and right of center) with
 no empty side of the frame left for someone else to fill, and no doorways or windows with people in them.
 Camera moves are slow; nothing whips past the lens, so every face stays sharp.
+Keep the characters simple: hands empty and free to dance. A prop is in someone's hands only in the shot
+whose words are about that prop, and it's gone in the next shot. Ignore any object a character's notes say
+they always carry.
 Never change anyone's outfit, hair or age, never add new named characters, keep everything safe."""
 
 
