@@ -410,6 +410,9 @@ def hair_of(c):
     return " ".join(dict.fromkeys(found))
 
 
+EMPTY_HANDS = "Nobody holds or carries anything: every hand is empty for the whole shot."
+
+
 def head_count(cast):
     """Exactly who is in the shot. Video models invent extra people to fill space or match extra voices."""
     if not cast:
@@ -438,7 +441,7 @@ def identity_lock(cast):
     return ("IDENTITY LOCK, the most important instruction: each person must be unmistakably the same real person as "
             "in their reference images, pixel-faithful in eye color and shape, eyebrows, nose, ears, lips, teeth, "
             "skin tone, freckles, hair and outfit. Do not beautify, age or restyle them.\n" + "\n".join(lines) + "\n"
-            + head_count(cast) + "\n")
+            + head_count(cast) + " " + EMPTY_HANDS + "\n")
 
 
 def character_bible(c):
@@ -467,9 +470,9 @@ Recurring cast available (use their exact ids in scene.cast; feature everyone ac
 
 Keep the cast in character, using their story bible: work in signature moves and catchphrases
 (as call-and-response where it fits), show their friendships on screen, and where it suits the topic
-give one character a small moment tied to their growth. Keep the characters simple: their hands are
-empty and free to dance. Nobody carries a favorite object, snack or toy through the video; a prop
-appears only in the one shot whose lyric is about it, and a "like" earns at most one line of the song.
+give one character a small moment tied to their growth. Keep the characters simple: nobody holds or
+carries anything in any shot (no snacks, toys, instruments or favorite objects), so every action is done
+with empty hands. Things the lyrics mention sit in the scene or appear as a cutaway, never in a hand.
 
 Requirements:
 - sections: in song order (Intro, Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus, Outro...).
@@ -1169,7 +1172,7 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
     hair = " ".join(f"{c['name']}'s hair stays exactly like this in every frame: {hair_of(c)}"
                     for c in cast if hair_of(c))
-    hair += " Everyone's hands are empty unless this shot's action names something they hold."
+    hair += " " + EMPTY_HANDS
     hair += " " + " ".join(f"{c['name']} keeps wearing {c['icon'].rstrip('. ')} for the whole shot."
                            for c in cast if c.get("icon"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""

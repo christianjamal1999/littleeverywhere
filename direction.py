@@ -249,9 +249,9 @@ Only the cast listed as "in shot" may be seen or mentioned in that shot's notes:
 frame, hiding or off-screen. Frame a shot of one person centered (two people: left and right of center) with
 no empty side of the frame left for someone else to fill, and no doorways or windows with people in them.
 Camera moves are slow; nothing whips past the lens, so every face stays sharp.
-Keep the characters simple: hands empty and free to dance. A prop is in someone's hands only in the shot
-whose words are about that prop, and it's gone in the next shot. Ignore any object a character's notes say
-they always carry.
+Keep the characters simple: nobody holds or carries anything in any shot, so hands are always empty and
+free to dance. Something the words mention (an apple, a ball, an instrument) sits in the scene or gets its
+own insert shot with no people. Ignore any object a character's notes say they hold, carry or play.
 Never change anyone's outfit, hair or age, never add new named characters, keep everything safe."""
 
 
