@@ -21,6 +21,7 @@ LEAD_SECONDS = 0.25  # a scene starts just before its first sung word
 HEARD_WINDOW = 1.5  # a transcript word this close to where a lyric word was aligned confirms the line is sung
 MIN_SCENE_SECONDS = 1.5
 BITRATE_OVERSHOOT = 1.2
+PREVIEW_TIMEOUT = 200  # seconds for one scene's encode on a busy two-core server
 ALIGN_USD_PER_HOUR = sv.TRANSCRIBE_USD_PER_HOUR
 PREVIEW_AUDIO = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
 
@@ -278,9 +279,10 @@ def build_preview(sc, song_path, ass, aspect, kbps, out_path):
              else ["-f", "lavfi", "-t", f"{dur:.4f}", "-i", "anullsrc=r=44100:cl=stereo"])
     sv._run(inputs + audio + [
         "-map", "0:v", "-map", "1:a", "-vf", vf, "-frames:v", str(n), "-af", f"apad,atrim=0:{dur:.4f}",
-        "-c:v", "libx264", "-preset", "fast", "-bf", "0", "-crf", "17", "-maxrate", f"{kbps}k",
-        "-bufsize", f"{kbps}k", "-pix_fmt", "yuv420p", "-r", str(FPS)] + PREVIEW_AUDIO
-        + ["-movflags", "+faststart", out_path])
+        # With bitrate to spare, the quicker preset looks the same and takes half the time on a small server.
+        "-c:v", "libx264", "-preset", "veryfast" if kbps >= 5000 else "fast", "-bf", "0", "-crf", "17",
+        "-maxrate", f"{kbps}k", "-bufsize", f"{kbps}k", "-pix_fmt", "yuv420p", "-r", str(FPS)] + PREVIEW_AUDIO
+        + ["-movflags", "+faststart", out_path], timeout=PREVIEW_TIMEOUT)
     if src and sc.get("video"):
         sv._discard_download(sc["video"], src)
     elif src:

@@ -314,7 +314,10 @@ def advance_project(s, p, budget):
             add_event(q, f"{what} for scene {n}", ok=bool(url), error=err, kind=kind)
     update_doc("projects", pid, apply)
     store.delete_media(stale)
-    plan = (store.load_doc("projects", pid) or {}).get("plan") or {}
+    latest = store.load_doc("projects", pid) or {}
+    if (latest.get("auto") or {}).get("on"):
+        return  # "do everything" cuts the previews itself, one request at a time
+    plan = latest.get("plan") or {}
     for kind, n, rid, url, err in results:
         if kind == "video" and url:  # the shot itself, and every chorus repeat that reuses it
             for sc in plan.get("scenes", []):
@@ -1190,7 +1193,11 @@ def _try_preview(s, pid, n):
         error = str(e)
 
         def apply(q):
-            _scene(q, n)["errors"]["preview"] = error
+            target = _scene(q, n)
+            if (target.get("preview") or {}).get("key") == preview_key(s, q, target):
+                return  # another request built it in the meantime, so there's nothing wrong
+            target["errors"]["preview"] = error
+            target.setdefault("tries", {})["preview"] = (target.get("tries") or {}).get("preview", 0) + 1
         return update_doc("projects", pid, apply)
 
 

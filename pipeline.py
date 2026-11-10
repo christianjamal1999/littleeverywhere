@@ -27,6 +27,7 @@ MAX_TRIES = 3  # of one step, or of one scene's keyframe or clip
 MAX_REMAKES = 2  # times the automatic check may send one scene back
 MAX_RECOMPOSE = 2
 UNHEARD_LIMIT = 0.12  # share of lyric lines missing from the song before it's composed again
+STEP_LOCK_SECONDS = 310  # a step still marked pending after this long was cut off by the server
 TICK_SECONDS = 240  # stop starting new work after this long, so the request ends inside the limit
 
 
@@ -249,13 +250,19 @@ def next_step(s, p):
 
     stale = [sc for sc in scenes if sync.media_scene(plan, sc).get("video")
              and (sc.get("preview") or {}).get("key") != studio.preview_key(s, p, sc)]
+    failed = next((sc for sc in stale if (sc.get("tries") or {}).get("preview", 0) >= MAX_TRIES), None)
+    if failed:
+        raise Stop(f"Scene {failed['n']}'s preview couldn't be made after {MAX_TRIES} tries: "
+                   f"{(failed.get('errors') or {}).get('preview')}")
     if stale:
         batch = stale[:PREVIEWS_PER_TICK]
-        return ("previews", f"Cutting each scene to the song ({len(scenes) - len(stale)}/{len(scenes)} done)",
-                lambda: [studio._try_preview(s, pid, sc["n"]) for sc in batch])
-    failed = next((sc for sc in scenes if (sc.get("errors") or {}).get("preview")), None)
-    if failed:
-        raise Stop(f"Scene {failed['n']}'s preview couldn't be made: {failed['errors']['preview']}")
+        began = time.time()
+
+        def cut():
+            for sc in batch:
+                if time.time() - began < TICK_SECONDS - sync.PREVIEW_TIMEOUT:  # the rest wait for the next tick
+                    studio._try_preview(s, pid, sc["n"])
+        return "previews", f"Cutting each scene to the song ({len(scenes) - len(stale)}/{len(scenes)} done)", cut
 
     # Chorus repeats follow their original: approved when it is.
     by_n = {sc["n"]: sc for sc in scenes}
@@ -344,6 +351,9 @@ def advance(s, p):
     pid, auto = p["id"], p.get("auto") or {}
     if studio.task_running(p):
         return "busy"
+    # One request at a time per video: an open tab and the server's timer both call this.
+    if auto.get("pending") and time.time() - auto.get("pending_at", 0) < STEP_LOCK_SECONDS:
+        return "busy"
     sv.set_spend_project(pid)
     try:
         step, label, run = next_step(s, p)
@@ -366,7 +376,7 @@ def advance(s, p):
     fails = (auto.get("fails", 0) if same else 0) + (1 if same and auto.get("pending") else 0)  # cut off mid-step
     if fails >= MAX_TRIES:
         return _stop(pid, f"{label} didn't finish after {MAX_TRIES} tries. {auto.get('last_error') or ''}".strip())
-    _set_auto(pid, status=label + "…", step=step, fails=fails, pending=True, error=None)
+    _set_auto(pid, status=label + "…", step=step, fails=fails, pending=True, pending_at=time.time(), error=None)
     try:
         run()
     except (sv.UserError, RuntimeError) as e:

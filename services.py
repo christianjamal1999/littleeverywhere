@@ -1411,13 +1411,13 @@ def transcribe_song(settings, song_path):
 FFMPEG_STEP_TIMEOUT = 120  # one scene segment never legitimately takes this long
 
 
-def _run(args):
+def _run(args, timeout=FFMPEG_STEP_TIMEOUT):
     try:
         p = subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y"] + args,
-                           capture_output=True, text=True, timeout=FFMPEG_STEP_TIMEOUT)
+                           capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise RuntimeError("ffmpeg got stuck on one of the clips (a damaged image or video?). "
-                           "Regenerate the scene and render again.")
+        raise RuntimeError(f"The video encoder didn't finish in {timeout} seconds (the server was busy, or the "
+                           "clip is damaged). It will be tried again.")
     if p.returncode != 0:
         raise RuntimeError("ffmpeg failed: " + p.stderr[-600:])
 
