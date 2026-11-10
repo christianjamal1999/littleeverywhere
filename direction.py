@@ -252,6 +252,10 @@ Camera moves are slow; nothing whips past the lens, so every face stays sharp.
 Keep the characters simple: nobody holds or carries anything in any shot, so hands are always empty and
 free to dance. Something the words mention (an apple, a ball, an instrument) sits in the scene or gets its
 own insert shot with no people. Ignore any object a character's notes say they hold, carry or play.
+An insert of animals or objects must never look like the children changed into them: don't follow a shot of
+two kids with two animals posed the same way, give the animals a different number, framing and place, and
+show them doing the song's action (hopping, wiggling, flapping). No kissing, nuzzling or cuddling animals.
+No words, letters, numbers or signs anywhere in the picture.
 Never change anyone's outfit, hair or age, never add new named characters, keep everything safe."""
 
 
@@ -267,6 +271,40 @@ def break_down_shots(settings, plan, cast, world, where):
     with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_CALLS, len(chunks))) as pool:
         results = list(pool.map(run, chunks))
     return {s["n"]: s for r in results for s in r["scenes"]}
+
+
+REDO_SCHEMA = _obj(cast=STRS, shot_size=STR, angle=STR, lens=STR, camera_move=STR, beats=STR, blocking=STR,
+                   lighting=STR, keyframe=STR, continuity=STR, card=STR)
+
+
+def redo_shot(settings, plan, cast, sc, note=""):
+    """A different take on one shot, from the creator's note. Returns (direction, cast ids)."""
+    world = plan["direction"]
+    ids = [loc["id"] for loc in world["locations"]]
+    where = {x["n"]: ((x.get("direction") or {}).get("location") if (x.get("direction") or {}).get("location") in ids
+                      else ids[0]) for x in plan["scenes"]}
+    old = sc.get("direction") or {}
+    by_n = {x["n"]: x for x in plan["scenes"]}
+    around = "\n".join(f"- the shot {'before' if d < 0 else 'after'} it (scene {sc['n'] + d}): "
+                       f"{(by_n[sc['n'] + d].get('direction') or {}).get('keyframe') or by_n[sc['n'] + d].get('visual', '')}"
+                       for d in (-1, 1) if sc["n"] + d in by_n)
+    names = ", ".join(c["name"] for c in cast) or "nobody"
+    prompt = _shot_prompt(plan, cast, world, where, [sc]) + f"""
+
+This one shot is being REPLACED: the creator watched it and wants something else.
+The rejected version: {old.get('keyframe') or sc.get('visual', '')} {old.get('beats', '')}
+What the creator said: {note or 'Swap it for something clearly different.'}
+Its neighbours, which stay as they are:
+{around}
+Write a new version that is clearly different from the rejected one, fixes what the creator said, fits the
+words sung in it and cuts cleanly from the shot before to the shot after (never looking like the children
+turned into something else).
+cast: the names of the cast members in the new shot, chosen from: {names}. Use an empty list only for an
+insert with no people. If there are sung words, prefer showing one or two of the children singing them."""
+    out = sv.claude_json(settings, DIRECTOR, prompt, REDO_SCHEMA, f"Redoing scene {sc['n']}")
+    by_name = {c["name"].lower(): c["id"] for c in cast}
+    chosen = list(dict.fromkeys(by_name[n.strip().lower()] for n in out.pop("cast") if n.strip().lower() in by_name))
+    return {"location": where[sc["n"]], **out}, chosen
 
 
 def direct(settings, plan, cast, brief):

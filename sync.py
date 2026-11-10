@@ -221,7 +221,12 @@ def video_kbps(settings, duration, bumpers):
     return int(max(1500, min(12000, (room * 8000 / max(1.0, duration) - 192) / BITRATE_OVERSHOOT)))
 
 
+cards_enabled = False  # set from the "learning words on screen" setting on every request
+
+
 def card_of(sc):
+    if not cards_enabled:
+        return ""
     return str((sc.get("direction") or {}).get("card") or "").strip()[:40]
 
 

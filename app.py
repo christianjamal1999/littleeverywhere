@@ -36,6 +36,7 @@ DEFAULTS = {
     "look": "lifelike",
     "reuse_chorus": True,
     "auto_review": True,
+    "learning_cards": False,
     "youtube_client_id": "",
     "youtube_client_secret": "",
     "youtube_refresh_token": "",
@@ -86,6 +87,7 @@ def settings(overrides=None):
     s.update({k: v for k, v in {**plain, **secrets, **(overrides or {})}.items()
               if k in DEFAULTS and v not in (None, "")})
     s["video_mode"], s["look"] = sv.video_mode(s), sv.look_of(s)
+    sync.cards_enabled = s.get("learning_cards") in (True, "true", "1")
     return s
 
 
@@ -1118,6 +1120,48 @@ def submit_video(s, pid, p, n, with_song=True):
     note = review.get("note", "") if review.get("status") == "declined" else ""
     job = sv.video_job(s, sc, _scene_cast(p, sc), audio, p["plan"].get("bpm"), _cast_of(p), note)
     return _set_scene_job(pid, n, "video", job)
+
+
+@app.post("/api/projects/<pid>/scenes/<int:n>/redo")
+def scene_redo(pid, n):
+    """Swap one scene for a different take: Claude re-directs the shot from your note, the old picture, clip
+    and approval are dropped, and the new keyframe starts painting. Body: {note}. A chorus repeat sends
+    the redo to the shot it repeats, since they share one clip."""
+    s = settings()
+    note = str(body().get("note", "")).strip()[:500]
+    p = load_or_404("projects", pid)
+    sc = _scene(p, n)
+    if sc.get("reuse"):
+        n = sc["reuse"]
+        sc = _scene(p, n)
+    if not (p["plan"].get("direction")):
+        raise sv.UserError("Run the creative director first.")
+    if (sc.get("jobs") or {}):
+        raise sv.UserError(f"Scene {n} is still generating. Try again when it's done.")
+    sv.set_spend_project(pid)
+    new, cast_ids = dr.redo_shot(s, p["plan"], _cast_of(p), sc, note)
+    stale = []
+
+    def apply(q):
+        for target in q["plan"]["scenes"]:
+            if target["n"] == n:
+                target["direction"], target["cast"] = new, cast_ids
+                target["singers"] = cast_ids if target.get("sung") else []
+                target["redo_note"] = note
+                stale.extend([target.pop("image", None), target.pop("video", None)])
+            if target["n"] == n or target.get("reuse") == n:
+                stale.append((target.pop("preview", None) or {}).get("url"))
+                for k in ("review", "remakes", "tries"):
+                    target.pop(k, None)
+                target["errors"] = {}
+        if q.get("final"):
+            q["render_note"] = f"Scene {n} was redone after this render. Render again to include it."
+        if q.get("auto"):  # a video made by Do everything finishes the redo the same way
+            q["auto"] = {**q["auto"], "on": True, "done": False, "error": None, "pending": False, "fails": 0,
+                         "status": f"Redoing scene {n}…"}
+    update_doc("projects", pid, apply)
+    store.delete_media(stale)
+    return jsonify(submit_image(s, pid, load_or_404("projects", pid), n))
 
 
 @app.post("/api/projects/<pid>/scenes/<int:n>/video")

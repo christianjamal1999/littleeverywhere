@@ -984,6 +984,7 @@ function sceneCard(s) {
         <button class="small ${s.image && !s.video ? "primary" : ""}" data-act="video" ${!s.image || jobs.video ? "disabled" : ""}>${jobs.video ? '<span class="spinner"></span> Animating' : s.video ? "Re-animate" : "Animate"}</button>`}
       </div>
       ${reviewRow}
+      ${s.direction && !jobs.image && !jobs.video ? `<div class="row"><button class="small" data-redo="${s.n}">↻ Redo scene</button><span class="muted">Swap it for a different shot</span></div>` : ""}
       ${s.direction ? `<details class="fold" data-fold="scene:${s.n}:dir"><summary>Director's notes</summary>
         <p class="muted">${esc(s.direction.shot_size)}, ${esc(s.direction.angle)}, ${esc(s.direction.lens)} · ${esc(s.direction.camera_move)}</p>
         <label>First frame <textarea data-d="keyframe" rows="4">${esc(s.direction.keyframe)}</textarea></label>
@@ -1116,6 +1117,14 @@ function bindEditor(p) {
       if (note === null) return;
     }
     await action(btn, () => api("POST", `/api/projects/${id}/scenes/${n}/review`, { decision, note }));
+  }));
+  $$(".scene button[data-redo]").forEach((b) => (b.onclick = async () => {
+    const n = b.dataset.redo, sc = p.plan.scenes.find((x) => String(x.n) === n);
+    const note = prompt(`Redo scene ${n}${sc?.reuse ? ` (a chorus repeat, so this redoes scene ${sc.reuse}, which it shows)` : ""}. What should it be instead? For example "the two kids hopping like bunnies" or "no animals, just Sofia singing". Leave blank for anything different.`, "");
+    if (note === null) return;
+    if (!hasKeys("anthropic_api_key", "hf_key_id", "hf_key_secret")) return;
+    toast(`Redoing scene ${n}: a new shot, keyframe and clip. ${p.auto ? "It animates, gets checked and re-renders on its own." : "Press Animate when the keyframe is ready."}`);
+    await action(b, () => api("POST", `/api/projects/${id}/scenes/${n}/redo`, { note }));
   }));
   $("#render-draft").onclick = (e) => {
     toast("Rendering a draft from whatever is there now. You'll get a notice.");
