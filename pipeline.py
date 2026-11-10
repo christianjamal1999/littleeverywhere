@@ -26,6 +26,7 @@ REVIEWS_PER_TICK = 6
 MAX_TRIES = 3  # of one step, or of one scene's keyframe or clip
 MAX_REMAKES = 2  # times the automatic check may send one scene back
 MAX_RECOMPOSE = 2
+FIRST_WORD_SECONDS = 6  # a song with no singing by now is composed again: the hook has to land early
 UNHEARD_LIMIT = 0.12  # share of lyric lines missing from the song before it's composed again
 STEP_LOCK_SECONDS = 310  # a step still marked pending after this long was cut off by the server
 TICK_SECONDS = 240  # stop starting new work after this long, so the request ends inside the limit
@@ -183,12 +184,15 @@ def next_step(s, p):
         return "compose", "Making the music", lambda: studio.song_compose(pid)
     if not song.get("timing"):
         return "timing", "Timing the lyrics to the song", lambda: studio._fit_to_song(s, pid, p)
-    if (song.get("source") == "elevenlabs" and sync.unheard_share(song["timing"]) > UNHEARD_LIMIT
+    heard = [ln["times"][0][0] for ln in song["timing"] if ln["heard"]]
+    late = not heard or min(heard) > FIRST_WORD_SECONDS
+    if (song.get("source") == "elevenlabs" and (late or sync.unheard_share(song["timing"]) > UNHEARD_LIMIT)
             and auto.get("recomposed", 0) < MAX_RECOMPOSE and not any(sc.get("video") for sc in _scenes(p))):
         def recompose():
             studio.update_doc("projects", pid, lambda q: q["auto"].update(recomposed=auto.get("recomposed", 0) + 1))
             return studio.song_compose(pid)
-        return "recompose", "Some lyric lines are missing from the song, so making the music again", recompose
+        why = "The singing starts too late" if late else "Some lyric lines are missing from the song"
+        return "recompose", f"{why}, so making the music again", recompose
     if not plan.get("choreography"):
         return "choreograph", "Choreographing the dance", lambda: studio.projects_choreograph(pid)
     if not plan.get("direction"):

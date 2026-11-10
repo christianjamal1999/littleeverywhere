@@ -1095,7 +1095,9 @@ def _fit_to_song(s, pid, p):
             return
         q["song"].update(words=heard, timing=lines, timing_key=sync.timing_key(lines))
         moved = set(sync.fit_scenes(q["plan"], lines, song["duration"], cast_ids))
-        sync.mark_reuse(q["plan"], lines, s.get("reuse_chorus") not in (False, "false", "0"))
+        # A short video can't hide repetition, so each chorus shot is repeated once there, twice otherwise.
+        sync.mark_reuse(q["plan"], lines, s.get("reuse_chorus") not in (False, "false", "0"),
+                        1 if song["duration"] < 120 else 2)
         stale = []
         for sc in q["plan"]["scenes"]:
             if (sc["n"] in moved or sc.get("reuse")) and (sc.get("video") or sc.get("preview")):
@@ -1328,8 +1330,13 @@ def scene_review(pid, n):
 def submit_thumbnails(s, pid, p):
     plan = p.get("plan") or abort(400, "Write the song first.")
     cast = _cast_of(p)
-    refs, legend = sv.cast_refs(s, cast, per_character=1)
-    jobs = [sv.image_job(s, sv.thumbnail_prompt(s, plan, cast, legend, take), refs, "16:9", best=True)
+    stage = next((loc for loc in _locations(p) if loc.get("image")), None)
+    refs, legend = sv.cast_refs(s, cast, per_character=1, max_refs=sv.MAX_SEPARATE_REFS - (1 if stage else 0))
+    if stage:
+        refs = refs + [stage["image"]]
+        legend = legend + [f"reference image {len(refs)} is the video's setting, {stage['name']}: use this place, "
+                           "its colors, weather and light"]
+    jobs = [sv.image_job(s, sv.thumbnail_prompt(s, plan, cast, legend, take, stage), refs, "16:9", best=True)
             for take in range(len(sv.THUMBNAIL_TAKES))]
 
     def apply(q):

@@ -118,7 +118,12 @@ REUSE_DURATION_SLACK = 0.2  # seconds a repeated chorus shot may differ in lengt
 REUSE_WORD_SLACK = 0.15  # and each word may land this far from where it did the first time
 
 
-def mark_reuse(plan, lines, enabled=True):
+REPEAT_ZOOM = 0.12  # each repeat of a chorus shot is punched in this much more, so it isn't the same picture
+LONG_SHOT_SECONDS = 6.0  # a shot longer than this is cut into two angles: as filmed, then punched in
+LONG_SHOT_ZOOM = 1.18
+
+
+def mark_reuse(plan, lines, enabled=True, max_repeats=2):
     """A chorus shot whose words fall at the same moments as the same shot of an earlier chorus reuses
     that shot's keyframe and animation (scene["reuse"] = its number): the chorus is paid for once and the
     lips still match, because the song repeats on the same beat grid."""
@@ -130,13 +135,17 @@ def mark_reuse(plan, lines, enabled=True):
         if not enabled or not words or not str(sc.get("section", "")).lower().startswith("chorus"):
             continue
         dur, cast = sc["end"] - sc["start"], sorted(sc.get("cast", []))
-        for n, fwords, fdur, fcast in firsts:
-            if (fcast == cast and abs(fdur - dur) <= REUSE_DURATION_SLACK and len(fwords) == len(words)
+        sc.pop("repeat", None)
+        for first in firsts:
+            n, fwords, fdur, fcast, used = first
+            if (used < max_repeats and fcast == cast and abs(fdur - dur) <= REUSE_DURATION_SLACK
+                    and len(fwords) == len(words)
                     and all(a[0] == b[0] and abs(a[1] - b[1]) <= REUSE_WORD_SLACK for a, b in zip(fwords, words))):
-                sc["reuse"] = n
+                first[4] += 1
+                sc["reuse"], sc["repeat"] = n, first[4]
                 break
         else:
-            firsts.append((sc["n"], words, dur, cast))
+            firsts.append([sc["n"], words, dur, cast, 0])
 
 
 def media_scene(plan, sc):
@@ -144,7 +153,14 @@ def media_scene(plan, sc):
     if not sc.get("reuse"):
         return sc
     src = next((x for x in plan["scenes"] if x["n"] == sc["reuse"]), None)
-    return {**sc, "image": (src or {}).get("image"), "video": (src or {}).get("video")}
+    return {**sc, "image": (src or {}).get("image"), "video": (src or {}).get("video"),
+            "zoom": round(1 + REPEAT_ZOOM * sc["repeat"], 2) if sc.get("repeat") else 1}
+
+
+def reframing(sc):
+    """(zoom for the whole shot, whether it's cut into two angles) for a scene that has a clip."""
+    split = bool(sc.get("video")) and sc["end"] - sc["start"] > LONG_SHOT_SECONDS
+    return sc.get("zoom") or 1, split
 
 
 def unheard_share(lines):
@@ -231,8 +247,10 @@ def card_of(sc):
 
 
 def preview_key(sc, tkey, captions, size, kbps):
+    zoom, split = reframing(sc)
+    extra = (f"|z{zoom}" if zoom != 1 else "") + ("|split" if split else "")
     return "|".join(str(x) for x in (sc.get("video") or sc.get("image") or "none", *frames(sc), tkey, captions,
-                                     size, kbps, card_of(sc), 3))
+                                     size, kbps, card_of(sc), 3)) + extra
 
 
 CARD_POP = r"{\fad(150,200)\t(0,160,\fscx112\fscy112)\t(160,320,\fscx100\fscy100)}"
@@ -267,9 +285,20 @@ def build_preview(sc, song_path, ass, aspect, kbps, out_path):
            f"tpad=stop_mode=clone:stop_duration={dur:.3f}")  # hold the last frame rather than loop back
     sub = (f",setpts=PTS+{start:.4f}/TB,ass=filename='{ass}':fontsdir='{sv.fonts_dir()}',setpts=PTS-STARTPTS"
            if ass else "")
+    def punch(z):  # zoom in toward the upper middle, where the faces are
+        return f",scale=iw*{z}:ih*{z},crop={w}:{h}:(iw-{w})/2:(ih-{h})*0.3,setsar=1" if z != 1 else ""
+
     if sc.get("video"):
         src = store.download_to(sc["video"], store.tmp_path("clip.mp4"))
-        inputs, vf = ["-i", src], fit + sub
+        zoom, split = reframing(sc)
+        if split:  # two angles from one clip: as filmed, then a punch-in from the midpoint
+            k = n // 2
+            vf = (f"{fit}{punch(zoom)},split[a][b];[a]trim=end_frame={k},setpts=PTS-STARTPTS[a1];"
+                  f"[b]trim=start_frame={k},setpts=PTS-STARTPTS{punch(LONG_SHOT_ZOOM)}[b1];"
+                  f"[a1][b1]concat=n=2:v=1:a=0,setsar=1" + sub)
+        else:
+            vf = fit + punch(zoom) + sub
+        inputs = ["-i", src]
     elif sc.get("image"):
         src = store.download_to(sc["image"], store.tmp_path("still.png"))
         zw, zh = w * 3 // 2, h * 3 // 2
@@ -283,7 +312,8 @@ def build_preview(sc, song_path, ass, aspect, kbps, out_path):
     audio = (["-ss", f"{start:.4f}", "-t", f"{dur:.4f}", "-i", song_path] if song_path
              else ["-f", "lavfi", "-t", f"{dur:.4f}", "-i", "anullsrc=r=44100:cl=stereo"])
     sv._run(inputs + audio + [
-        "-map", "0:v", "-map", "1:a", "-vf", vf, "-frames:v", str(n), "-af", f"apad,atrim=0:{dur:.4f}",
+        "-filter_complex", f"[0:v]{vf}[v]", "-map", "[v]", "-map", "1:a", "-frames:v", str(n),
+        "-af", f"apad,atrim=0:{dur:.4f}",
         # With bitrate to spare, the quicker preset looks the same and takes half the time on a small server.
         "-c:v", "libx264", "-preset", "veryfast" if kbps >= 5000 else "fast", "-bf", "0", "-crf", "17",
         "-maxrate", f"{kbps}k", "-bufsize", f"{kbps}k", "-pix_fmt", "yuv420p", "-r", str(FPS)] + PREVIEW_AUDIO
@@ -339,11 +369,13 @@ def build_short(scenes, song_path, out_path):
         src = store.download_to(sc["video"], store.tmp_path("shortclip.mp4"))
         seg = store.tmp_path(f"short{sc['n']}.mp4")
         graph = (f"[0:v]fps={FPS},tpad=stop_mode=clone:stop_duration={n / FPS:.3f},split[a][b];"
-                 "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.06[bg];"
+                 # the blurred fill is made small and blown up: the same look for a fraction of the work
+                 "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=6:2,"
+                 "scale=1080:1920,eq=brightness=-0.06[bg];"
                  "[b]crop=ih*1.2:ih,scale=1080:-2[fg];[bg][fg]overlay=0:(H-h)/2,setsar=1[v]")
         sv._run(["-i", src, "-filter_complex", graph, "-map", "[v]", "-frames:v", str(n), "-an", "-c:v", "libx264",
-                 "-preset", "fast", "-bf", "0", "-crf", "20", "-maxrate", "6000k", "-bufsize", "6000k",
-                 "-pix_fmt", "yuv420p", "-r", str(FPS), seg])
+                 "-preset", "veryfast", "-bf", "0", "-crf", "20", "-maxrate", "6000k", "-bufsize", "6000k",
+                 "-pix_fmt", "yuv420p", "-r", str(FPS), seg], timeout=PREVIEW_TIMEOUT)
         sv._discard_download(sc["video"], src)
         parts.append(seg)
     start, dur = frames(scenes[0])[0] / FPS, (frames(scenes[-1])[1] - frames(scenes[0])[0]) / FPS

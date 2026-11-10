@@ -116,8 +116,9 @@ Write:
   kids learn it by repetition.
 - scenes: one entry for every shot above (same n). moves: the move names used. counts: the beat-by-beat
   plan that fits the shot's beat count, like "1-2: two knee bounces; 3-4: clap above the head twice; 5-8:
-  Bunny Hop Clap". Name who does what when the cast doesn't move together. Singers keep their faces to the
-  camera and don't spin while they sing, so their lips stay readable. Use each child's mannerisms between
+  Bunny Hop Clap". Name who does what when the cast doesn't move together. Nobody ever turns their back to
+  the camera: when the words say twirl, spin or turn around, the move is swirling arms, a sway or a quick
+  quarter-turn and back, so faces and lips stay readable. Use each child's mannerisms between
   moves. formation: who stands where in this shot. energy: low, medium or high.
 Nobody crosses in front of anyone else, nobody leaves their spot, no lifts, no floor work, nothing unsafe."""
     out = sv.claude_json(settings, CHOREOGRAPHER, prompt, CHOREO_SCHEMA, "Choreography")
@@ -177,8 +178,10 @@ Write:
   bright, sunny, safe outdoor or cozy indoor places that suit the lyrics. One of them is the chorus stage:
   a glossy, colorful dance floor in the video's theme with glowing lights behind it (a barn-party stage for
   a farm song, a moonlit disco clearing for a night song), where every chorus is danced.
-- costumes: when the creator asked for outfits in this video (see above), or for a holiday or dress-up
-  song: one entry per cast member with exactly what they wear for the whole video, described precisely
+- costumes: when the creator asked for outfits in this video (see above), for a holiday or dress-up song,
+  or whenever the setting's weather calls for different clothes than their usual outfit (snow and cold:
+  coat, boots, mittens, scarf; rain: raincoat and wellies; beach or pool: sun hat, T-shirt and shorts):
+  one entry per cast member with exactly what they wear for the whole video, described precisely
   (each garment, its color and material) so it is identical in every shot. It replaces the usual outfit
   but keeps their signature item (worked in, like the sunflowers on a witch hat), hair and face exactly.
   Otherwise, an empty list.
@@ -255,6 +258,8 @@ Camera moves are slow; nothing whips past the lens, so every face stays sharp.
 Keep the characters simple: nobody holds or carries anything in any shot, so hands are always empty and
 free to dance. Something the words mention (an apple, a ball, an instrument) sits in the scene or gets its
 own insert shot with no people. Ignore any object a character's notes say they hold, carry or play.
+Nobody turns their back to the camera in any shot, even when the words say twirl or spin: show it with
+swirling arms or a sway.
 An insert of animals or objects must never look like the children changed into them: don't follow a shot of
 two kids with two animals posed the same way, give the animals a different number, framing and place, and
 show them doing the song's action (hopping, wiggling, flapping). No kissing, nuzzling or cuddling animals.

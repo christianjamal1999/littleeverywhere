@@ -411,6 +411,7 @@ def hair_of(c):
 
 
 EMPTY_HANDS = "Nobody holds or carries anything: every hand is empty for the whole shot."
+FACE_CAMERA = "Everyone keeps their face toward the camera for the whole shot and nobody turns their back to it: a twirl or spin in the words is shown with swirling arms, a sway or a quick quarter-turn and back, never by turning around."
 
 
 def head_count(cast):
@@ -477,8 +478,9 @@ with empty hands. Things the lyrics mention sit in the scene or appear as a cuta
 Requirements:
 - sections: in song order (Intro, Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus, Outro...).
   duration_seconds per section between 6 and 40, summing to the target length.
-  lyrics: the sung lines, one per line, simple words a 3-year-old can follow; empty for an
-  instrumental intro. styles: 2-4 short music-production descriptors for that section.
+  lyrics: the sung lines, one per line, simple words a 3-year-old can follow. The first words are sung
+  within the first 4 seconds: the Intro is at most 5 seconds and its lyrics are the hook line itself (a
+  full sung line, not a shout), never an instrumental. styles: 2-4 short music-production descriptors for that section.
 - music_style: one line describing genre, instruments, vocals (e.g. "cheerful kids pop, ukulele,
   hand claps, bright female lead vocal with kids choir on chorus").
 - scenes: contiguous shots covering 0 to the full length with no gaps (scene.start of each =
@@ -1087,12 +1089,15 @@ THUMBNAIL_TAKES = [
 ]
 
 
-def thumbnail_prompt(settings, plan, cast, legend, take):
+def thumbnail_prompt(settings, plan, cast, legend, take, location=None):
     name, framing = THUMBNAIL_TAKES[take % len(THUMBNAIL_TAKES)]
+    where = (f"It happens in the video's own setting, {location['name']}: {location['description']} "
+             if location else "")
     title = (f"Big glossy 3D bubble-letter title reading \"{plan['thumbnail_text']}\", spelled exactly. "
              if name == "Dance party" else "No text. ")
     return (f"{style_prefix(settings, cast)}{identity_lock(cast)}YouTube thumbnail for a kids' music video. "
-            f"{plan['thumbnail_prompt']} {framing} " + (f"Characters: {'; '.join(legend)}. " if legend else "")
+            f"{plan['thumbnail_prompt']} {where}{framing} "
+            + (f"References: {'; '.join(legend)}. " if legend else "")
             + title + "Hyper-saturated colors, bright rim light, extremely high contrast, simple readable "
             "composition that works at phone size.")
 
@@ -1252,7 +1257,8 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
                            for c in cast if c.get("icon"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""
     motion = (f"{KEEP_IDENTITY} {head_count(cast)} {hair} {LIVELY} {tempo}{_shot_motion(scene, cast, everyone)} "
-              f"{habits} {_sung_direction(scene, cast)} Smooth, steady camera; every face sharp and in focus. "
+              f"{habits} {_sung_direction(scene, cast)} {FACE_CAMERA if cast else ''} Smooth, steady camera; "
+              "every face sharp and in focus. "
               "No text or subtitles.")
     if len(cast) >= 3:
         # Video models mix up characters that cross paths, so a group stays put.
