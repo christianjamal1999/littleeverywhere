@@ -1097,13 +1097,26 @@ def thumbnail_prompt(settings, plan, cast, legend, take):
             "composition that works at phone size.")
 
 
-def icon_job(settings):
+def icon_job(settings, notes="", cast=()):
+    """The channel icon. notes: what the creator wants it to show. cast: characters to put in it, drawn
+    from their reference images."""
     name = settings.get("channel_name") or "our channel"
-    prompt = (f"Round YouTube channel icon for a kids' music channel called \"{name}\". A bold, friendly, "
-              "professional logo: a big cheerful music note with a smiling sun and a small globe, bright "
-              f"saturated colors, clean shapes on a simple background, with the words \"{name}\" in big rounded "
-              "letters spelled exactly. Very readable at small size. No people, no children, no watermark.")
-    return image_job({**settings, "image_resolution": "2k", "image_quality": "medium"}, prompt, [], "1:1")
+    cast = [c for c in cast if c.get("images")]
+    wish = f" What the creator asked for, which comes first: {notes.strip()}." if notes.strip() else ""
+    title = (f"with the words \"{name}\" in big rounded letters spelled exactly. Very readable at small size. "
+             "No other text, no watermark.")
+    if not cast:
+        prompt = (f"Round YouTube channel icon for a kids' music channel called \"{name}\".{wish} A bold, friendly, "
+                  "professional logo" + ("" if wish else ": a big cheerful music note with a smiling sun and a small globe")
+                  + f", bright saturated colors, clean shapes on a simple background, {title} No people, no children.")
+        return image_job({**settings, "image_resolution": "2k", "image_quality": "medium"}, prompt, [], "1:1")
+    refs, legend = cast_refs(settings, cast, per_character=1)
+    who = " and ".join(c["name"] for c in cast)
+    prompt = (f"{style_prefix(settings, cast)}{identity_lock(cast)}Round YouTube channel icon for a kids' music channel "
+              f"called \"{name}\".{wish} {who} from the shoulders up, close together with big happy smiles, faces "
+              f"large and filling the middle of the circle, on a simple bright background with a few music notes, "
+              f"{title} References: {'; '.join(legend)}.")
+    return image_job({**settings, "image_resolution": "2k", "image_quality": "medium"}, prompt, refs, "1:1")
 
 
 INTRO_BACKGROUND = "0xFFF6E0"

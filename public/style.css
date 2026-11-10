@@ -181,7 +181,7 @@ a.btn-like { text-decoration: none; }
 .chip.on { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
 .chip.busy { color: var(--ok); }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; }
-#cast-pick .chip { cursor: pointer; padding: 3px 10px; font-size: 13px; }
+#cast-pick .chip, #icon-cast .chip { cursor: pointer; padding: 3px 10px; font-size: 13px; }
 
 /* ---------- characters ---------- */
 .char-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }

@@ -393,6 +393,14 @@ async function renderChannel() {
   dl.hidden = !ch.icon; if (ch.icon) dl.href = ch.icon;
   const err = ch.icon_error || ch.clip_error, errBox = $("#channel-error");
   errBox.hidden = !err; errBox.textContent = err || "";
+  if (!state.characters.length) await loadCharacters().catch(() => {});
+  const notes = $("#icon-notes"), picks = $("#icon-cast");
+  if (!notes.dataset.filled) { notes.value = ch.icon_notes || ""; notes.dataset.filled = "1"; }
+  const chosen = new Set(picks.dataset.filled ? $$(".chip.on", picks).map((x) => x.dataset.cid) : ch.icon_cast || []);
+  picks.dataset.filled = "1";
+  const withPics = (state.characters || []).filter((c) => c.images.length);
+  picks.innerHTML = withPics.length ? withPics.map((c) => `<span class="chip ${chosen.has(c.id) ? "on" : ""}" data-cid="${c.id}">${esc(c.name)}</span>`).join("")
+    : `<span class="muted">No characters with pictures yet.</span>`;
   const preview = $("#intro-preview");
   preview.hidden = !ch.clip;
   if (ch.clip && preview.dataset.src !== ch.clip) {
@@ -403,11 +411,15 @@ async function renderChannel() {
 for (const [id, path] of [["#make-icon", "icon"], ["#make-intro", "animate"]]) {
   $(id).addEventListener("click", async (e) => {
     if (!hasKeys("hf_key_id", "hf_key_secret")) return;
-    const ok = await busy(e.currentTarget, () => api("POST", `/api/channel/${path}`));
+    const cast = $$("#icon-cast .chip.on").map((x) => x.dataset.cid);
+    if (path === "icon" && cast.length > 4) { toast("Pick at most 4 characters for the icon.", true); return; }
+    const ok = await busy(e.currentTarget, () => api("POST", `/api/channel/${path}`, path === "icon" ? { notes: $("#icon-notes").value, cast } : undefined));
     renderChannel();
     if (ok) { toast("Working on it. You'll get a notice when it's ready."); kickActivity(); }
   });
 }
+
+$("#icon-cast").addEventListener("click", (e) => { if (e.target.dataset.cid) e.target.classList.toggle("on"); });
 
 // ------------------------------------------------------------ dashboard
 const money = (n) => (n > 0 && n < 0.01 ? "<$0.01" : `$${(n || 0).toFixed(2)}`);

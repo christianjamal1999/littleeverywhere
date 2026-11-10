@@ -469,10 +469,14 @@ def channel_get():
 def channel_icon():
     s = settings()
     channel_doc()
-    job = sv.icon_job(s)
+    data = body()
+    notes = str(data.get("notes", "")).strip()[:600]
+    cast = cast_for([str(i) for i in (data.get("cast") or [])][:4])
+    job = sv.icon_job(s, notes, cast)
 
     def apply(q):
         q["icon_job"], q["icon_error"] = job, None
+        q["icon_notes"], q["icon_cast"] = notes, [c["id"] for c in cast]  # remembered for next time
     return jsonify(update_doc("app_settings", CHANNEL_ID, apply))
 
 
