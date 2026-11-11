@@ -4,7 +4,15 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmtTime = (t) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
+// A link that saves the file under a readable name. Files in Supabase live on another site, where the
+// browser ignores the download attribute and plays the file instead, so Supabase is asked to send it as a download.
+function saveLink(url, name) {
+  if (!/^https?:/.test(url || "")) return url;
+  const ext = (url.split("?")[0].match(/\.[a-z0-9]+$/i) || [""])[0];
+  const file = String(name || "download").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "download";
+  return `${url}${url.includes("?") ? "&" : "?"}download=${encodeURIComponent(file + ext)}`;
+}
+const fmtTime =(t) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
 
 const state = { config: null, settings: {}, keys: {}, password: "", characters: [], project: null, dirty: false };
 
@@ -842,6 +850,7 @@ function renderProject(p) {
     ${plan ? `<section class="panel card">
       <div class="panel-head"><h2>Music</h2>
         <div class="row">
+          ${p.song ? `<a class="btn-like" id="song-download" href="${esc(saveLink(p.song.url, plan.title))}" download>Download song</a>` : ""}
           <button class="${p.song ? "" : "primary"}" id="compose" ${lock("compose", "Composing…", "Generate with ElevenLabs")}</button>
           <label style="margin:0"><input type="file" id="song-file" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden><span class="btn-like">Upload MP3 or WAV</span></label>
         </div></div>
@@ -865,14 +874,14 @@ function renderProject(p) {
       <h2>Render and publish</h2>
       <div class="publish">
         <div>
-          ${p.final ? `<video controls src="${esc(p.final)}"></video><p><a href="${esc(p.final)}" download>Download MP4</a></p>` : `<p class="muted">Stitches every scene to the song timing. Scenes without video use their keyframe with a slow zoom, so you can render a draft any time.</p>`}
+          ${p.final ? `<video controls src="${esc(p.final)}"></video><p><a href="${esc(saveLink(p.final, plan.title))}" download>Download MP4</a></p>` : `<p class="muted">Stitches every scene to the song timing. Scenes without video use their keyframe with a slow zoom, so you can render a draft any time.</p>`}
           ${p.render_note ? `<p class="error">${esc(p.render_note)}</p>` : ""}
           <label class="check"><input type="checkbox" id="captions" ${state.settings.sing_along_captions !== false ? "checked" : ""}> Sing-along lyrics: karaoke captions where each word lights up as it's sung</label>
           <label class="check"><input type="checkbox" id="add-intro" ${state.settings.add_intro !== false ? "checked" : ""}> Open with the animated channel intro (make it in Settings)</label>
           <label class="check"><input type="checkbox" id="add-outro" ${state.settings.add_outro !== false ? "checked" : ""}> End with an outro: meet the cast, then like and subscribe</label>
           <div class="row"><button class="${allApproved ? "primary" : ""}" id="render" ${allApproved ? "" : `title="Approve every scene first"`} ${lock("render", "Rendering…", allApproved ? (p.final ? "Re-render" : "Render approved video") : `Render (${approvedCount}/${scenes.length} approved)`)}</button><button class="small ghost" id="render-draft">Render a draft</button></div>
           <p class="muted">${allApproved ? "Joins the approved previews exactly as you saw them, no credits used." : "The final render unlocks when every scene is approved. A draft uses whatever is there now."}</p>
-          ${p.short ? `<h3>Vertical Short</h3><video class="short" controls src="${esc(p.short)}"></video><p><a href="${esc(p.short)}" download>Download Short</a> <button class="small" id="make-short">Redo</button></p>`
+          ${p.short ? `<h3>Vertical Short</h3><video class="short" controls src="${esc(p.short)}"></video><p><a href="${esc(saveLink(p.short, plan.title + " Short"))}" download>Download Short</a> <button class="small" id="make-short">Redo</button></p>`
             : p.final ? `<p><button class="small" id="make-short" ${lock("short", "Cutting…", "Cut a vertical Short from the chorus")}</button></p>` : ""}
         </div>
         <div>
