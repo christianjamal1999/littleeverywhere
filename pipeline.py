@@ -492,6 +492,9 @@ def project_quote(pid):
             priced = True
         except sv.UserError:
             pass
+    if not priced:  # Higgsfield won't quote Seedance, so use the rate learned from your bill (clips average ~5.5 s)
+        learned = sv.fallback_usd(s, s["seedance_endpoint"], 5.5) if sv.video_mode(s) == "seedance_ref" else None
+        clip_usd, priced = (learned, True) if learned else (clip_usd, False)
     plan = p.get("plan") or {}
     usd = (clips * clip_usd + keyframes * FALLBACK_USD["keyframe"]
            + (0 if plan.get("direction") else 3 * FALLBACK_USD["set"] + FALLBACK_USD["claude"])

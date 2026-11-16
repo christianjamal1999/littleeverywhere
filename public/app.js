@@ -458,6 +458,10 @@ async function renderSpend() {
       <div class="row"><label style="margin:0">Seedance price per second, in dollars <input id="spend-rate" inputmode="decimal" placeholder="e.g. 0.15" value="${esc(d.rate)}" style="width:110px"></label>
         <button class="primary" id="spend-reprice">Fill in missing prices</button></div>
       <p class="error" id="spend-reprice-error" hidden></p></div>` : ""}
+    <div class="card spend-card"><h2>Match your Higgsfield bill</h2>
+      <p class="muted">Higgsfield doesn't tell this app what Seedance clips cost, so they're priced from a per-second rate${d.rate ? ` (now $${(+d.rate).toFixed(3)})` : ""}. Type the total your Higgsfield console says you've spent. Whatever the images and other models don't explain is spread over your Seedance clips by length, and that rate is used from then on. It also folds in anything Higgsfield charged that this app never saw, like clips that failed or spending before the Dashboard existed.</p>
+      <div class="row"><label style="margin:0">Higgsfield total spent, in dollars <input id="spend-billed" inputmode="decimal" placeholder="e.g. 836.71" style="width:120px"></label>
+        <button id="spend-calibrate">Match it</button></div></div>
     <div class="card spend-card"><h2>Cost per video</h2>
       ${d.videos.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Video</th>${services.map(([n]) => `<th class="num">${esc(n)}</th>`).join("")}<th class="num">Total</th></tr></thead>
         <tbody>${d.videos.map((v) => `<tr><td>${esc(v.title)}</td>${services.map(([n]) => `<td class="num">${money(v.by_service[n])}</td>`).join("")}<td class="num strong">${money(v.usd)}</td></tr>`).join("")}</tbody></table></div>`
@@ -472,6 +476,13 @@ async function renderSpend() {
 }
 $("#spend-range").addEventListener("change", renderSpend);
 $("#spend").addEventListener("click", async (e) => {
+  if (e.target.id === "spend-calibrate") {
+    const billed = $("#spend-billed").value.trim();
+    if (!billed) { toast("Type the total from your Higgsfield console first.", true); return; }
+    const res = await busy(e.target, () => api("POST", "/api/spend/calibrate", { billed }));
+    if (res) { toast(`Matched: ${res.clips} Seedance clips now cost $${res.rate.toFixed(3)} per second.`); renderSpend(); }
+    return;
+  }
   if (e.target.id !== "spend-reprice") return;
   const rate = $("#spend-rate").value.trim();
   const res = await busy(e.target, () => api("POST", "/api/spend/reprice", rate ? { rate } : {}));

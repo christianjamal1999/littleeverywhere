@@ -839,6 +839,37 @@ def _clip_seconds(event, projects):
     return int(min(15, max(4, -(-(sc["end"] - sc["start"]) // 1)))) if sc else 5
 
 
+@app.post("/api/spend/calibrate")
+def spend_calibrate():
+    """Make the Higgsfield total match the bill. Body: {billed: what Higgsfield says you've spent in all}.
+    Whatever the other charges don't explain is spread over the Seedance clips by their length, which sets
+    the per-second rate used from now on. Returns the new rate."""
+    try:
+        billed = float(str(body().get("billed", "")).replace("$", "").replace(",", "").strip())
+    except ValueError:
+        raise sv.UserError("Type the total from your Higgsfield console as a number, like 836.71.")
+    events = [e for e in store.list_docs("usage_events") if e.get("service") == "Higgsfield"]
+    projects = {p["id"]: p for p in store.list_docs("projects")}
+    clips = [e for e in events if "seedance" in (e.get("endpoint") or e.get("detail", ""))]
+    clip_ids = {e["id"] for e in clips}
+    other = sum(e.get("usd") or 0 for e in events if e["id"] not in clip_ids)
+    seconds = sum(_clip_seconds(e, projects) for e in clips)
+    if not clips or billed <= other:
+        raise sv.UserError(f"The other Higgsfield charges already add up to ${other:.2f}, so there's nothing "
+                           "left to spread over Seedance clips. Check the total you typed.")
+    rate = round((billed - other) / seconds, 4)
+    plain, secrets, _ = saved_settings()
+    _save_settings({**plain, "seedance_usd_per_second": rate}, secrets)
+    for e in clips:
+        secs = _clip_seconds(e, projects)
+        base = e.get("detail", "").split(", priced")[0].split(f", {secs} s clip")[0]
+        e.update(usd=round(rate * secs, 4), seconds=secs,
+                 endpoint=e.get("endpoint") or e.get("detail", "").split(",")[0].strip(),
+                 detail=f"{base}, {secs} s clip, priced to match your Higgsfield bill (${rate:.3f} per second)")
+        store.save_doc("usage_events", e)
+    return jsonify(rate=rate, clips=len(clips), seconds=seconds, other=round(other, 2))
+
+
 @app.post("/api/spend/reprice")
 def spend_reprice():
     """Put a price on every Higgsfield charge that has none: first by asking Higgsfield what a clip of that
