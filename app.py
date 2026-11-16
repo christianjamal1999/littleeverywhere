@@ -54,6 +54,7 @@ DEFAULTS = {
     "image_quality": "medium",
     "video_resolution": "1080p",
     "max_video_mb": 50,
+    "seedance_usd_per_second": "",
     "sing_along_audio": True,
     "sing_along_captions": True,
     "add_intro": True,
@@ -154,8 +155,14 @@ def collect_output(s, job, kind_prefix, what, project=None):
     if url:
         # Keyed by request, so two polls finishing the same job can't count it twice.
         took = f", took {time.time() - job['submitted']:.0f} s" if job.get("submitted") else ""
-        sv.log_spend("Higgsfield", what, job.get("usd"), (job.get("endpoint") or "") + took,
-                     project, "use_" + job["request_id"])
+        length = f", {job['seconds']} s clip" if job.get("seconds") else ""
+        usd = job.get("usd")
+        if usd is None:
+            usd = sv.fallback_usd(s, job.get("endpoint"), job.get("seconds"))
+            length += ", priced at your per-second rate" if usd is not None else ""
+        sv.log_spend("Higgsfield", what, usd, (job.get("endpoint") or "") + length + took,
+                     project, "use_" + job["request_id"],
+                     seconds=job.get("seconds"), endpoint=job.get("endpoint"), price_error=job.get("usd_error"))
         ext = os.path.splitext(url.split("?")[0])[1] or ".bin"
         ctype = {".mp4": "video/mp4", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
         return True, store.put_file(f"{kind_prefix}{ext}", store.fetch_bytes(url), ctype), None
@@ -817,7 +824,58 @@ def spend():
         e["title"] = titles.get(e.get("project"), "")
     return jsonify(total=sum(r["usd"] for r in services.values()), services=services,
                    videos=sorted(videos.values(), key=lambda v: v["usd"], reverse=True),
-                   recent=events[:SPEND_RECENT], tracking_since=events[-1]["ts"] if events else None)
+                   recent=events[:SPEND_RECENT], tracking_since=events[-1]["ts"] if events else None,
+                   unpriced=sum(r["unpriced"] for r in services.values()),
+                   rate=settings().get("seedance_usd_per_second") or "")
+
+
+def _clip_seconds(event, projects):
+    """How long the clip behind an old charge was, from its scene's place in the song."""
+    if event.get("seconds"):
+        return int(event["seconds"])
+    scenes = (projects.get(event.get("project")) or {}).get("plan", {}).get("scenes", [])
+    number = event.get("what", "").rsplit("scene ", 1)[-1]
+    sc = next((x for x in scenes if str(x["n"]) == number), None)
+    return int(min(15, max(4, -(-(sc["end"] - sc["start"]) // 1)))) if sc else 5
+
+
+@app.post("/api/spend/reprice")
+def spend_reprice():
+    """Put a price on every Higgsfield charge that has none: first by asking Higgsfield what a clip of that
+    length costs now, otherwise from the per-second rate in the body ({rate}), which is also saved."""
+    data = body()
+    if "rate" in data:
+        plain, secrets, _ = saved_settings()
+        try:
+            rate = float(str(data["rate"]).replace("$", "").strip() or 0)
+        except ValueError:
+            raise sv.UserError("Type the price per second as a number, like 0.15.")
+        _save_settings({**plain, "seedance_usd_per_second": rate if rate > 0 else ""}, secrets)
+    s = settings()
+    todo = [e for e in store.list_docs("usage_events") if e.get("usd") is None and e.get("service") == "Higgsfield"]
+    projects = {p["id"]: p for p in store.list_docs("projects")}
+    sample = next((c["images"][0] for c in store.list_docs("characters") if c.get("images")), None)
+    prices, why, priced = {}, None, 0
+    for e in todo:
+        endpoint = e.get("endpoint") or e.get("detail", "").split(",")[0].strip()
+        seconds = _clip_seconds(e, projects)
+        if (endpoint, seconds) not in prices:
+            usd, how = None, ""
+            if sample:
+                usd, error = sv.hf_price(s, endpoint, {
+                    "prompt": "A scene", "image_urls": [sv.public_url(s, sample)], "duration": seconds,
+                    "resolution": s.get("video_resolution") or "1080p", "aspect_ratio": s["aspect_ratio"]})
+                why, how = why or error, "at Higgsfield's current price"
+            if usd is None:
+                usd, how = sv.fallback_usd(s, endpoint, seconds), "at your per-second rate"
+            prices[(endpoint, seconds)] = (usd, how)
+        usd, how = prices[(endpoint, seconds)]
+        if usd is not None:
+            e.update(usd=usd, seconds=seconds, endpoint=endpoint,
+                     detail=f"{e.get('detail', '')}, {seconds} s clip, priced afterwards {how}")
+            store.save_doc("usage_events", e)
+            priced += 1
+    return jsonify(priced=priced, left=len(todo) - priced, error=why if priced < len(todo) else None)
 
 
 # ------------------------------------------------------------------ ideas

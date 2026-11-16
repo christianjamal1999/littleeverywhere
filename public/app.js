@@ -453,6 +453,11 @@ async function renderSpend() {
       ${services.map(([name, s]) => `<div class="tile"><div class="tile-label">${esc(name)}</div><div class="tile-value">${money(s.usd)}</div>
         <div class="muted">${esc(SERVICE_ROLE[name] || "")} · ${s.calls} call${s.calls === 1 ? "" : "s"}${s.unpriced ? `, ${s.unpriced} without a price` : ""}</div></div>`).join("")}
     </div>
+    ${d.unpriced ? `<div class="card spend-card warn"><h2>${d.unpriced} charge${d.unpriced === 1 ? " has" : "s have"} no price, so the totals above are too low</h2>
+      <p class="muted">Higgsfield didn't give a price for these clips when they were made. Fill them in: it first asks Higgsfield what each clip costs now. If Higgsfield still won't say, type what Seedance costs you per second of video (your Higgsfield console shows it) and that rate is used, for these and for future clips.</p>
+      <div class="row"><label style="margin:0">Seedance price per second, in dollars <input id="spend-rate" inputmode="decimal" placeholder="e.g. 0.15" value="${esc(d.rate)}" style="width:110px"></label>
+        <button class="primary" id="spend-reprice">Fill in missing prices</button></div>
+      <p class="error" id="spend-reprice-error" hidden></p></div>` : ""}
     <div class="card spend-card"><h2>Cost per video</h2>
       ${d.videos.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Video</th>${services.map(([n]) => `<th class="num">${esc(n)}</th>`).join("")}<th class="num">Total</th></tr></thead>
         <tbody>${d.videos.map((v) => `<tr><td>${esc(v.title)}</td>${services.map(([n]) => `<td class="num">${money(v.by_service[n])}</td>`).join("")}<td class="num strong">${money(v.usd)}</td></tr>`).join("")}</tbody></table></div>`
@@ -466,6 +471,20 @@ async function renderSpend() {
     <p class="hint">Calculated from each provider's published prices, so treat these as close estimates; your provider invoices are the final word. Spending before this Dashboard was added isn't included. ElevenLabs is priced at its $0.15 per minute API rate, which may differ if your plan includes credits.</p>`;
 }
 $("#spend-range").addEventListener("change", renderSpend);
+$("#spend").addEventListener("click", async (e) => {
+  if (e.target.id !== "spend-reprice") return;
+  const rate = $("#spend-rate").value.trim();
+  const res = await busy(e.target, () => api("POST", "/api/spend/reprice", rate ? { rate } : {}));
+  if (!res) return;
+  if (res.left) {
+    const box = $("#spend-reprice-error");
+    box.hidden = false;
+    box.textContent = `${res.priced} priced, ${res.left} still without a price. Higgsfield said: ${res.error || "nothing"}. Type your per-second price above and press the button again.`;
+    if (!res.priced) return;
+  }
+  toast(`${res.priced} charge${res.priced === 1 ? "" : "s"} priced.`);
+  if (!res.left) renderSpend();
+});
 
 // ------------------------------------------------------------ characters
 async function loadCharacters() {

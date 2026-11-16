@@ -159,7 +159,14 @@ def load_doc(kind, doc_id):
 
 def list_docs(kind):
     if USE_SUPABASE:
-        return [r["data"] for r in _sb("GET", f"/rest/v1/{kind}?select=data&order=created_at.desc")]
+        # Supabase returns at most 1,000 rows per request, so longer tables are read page by page.
+        rows, page = [], 1000
+        while True:
+            got = _sb("GET", f"/rest/v1/{kind}?select=data&order=created_at.desc,id.desc"
+                             f"&limit={page}&offset={len(rows)}")
+            rows += got
+            if len(got) < page:
+                return [r["data"] for r in rows]
     docs = []
     for name in os.listdir(_doc_dir(kind)):
         if name.endswith(".json"):

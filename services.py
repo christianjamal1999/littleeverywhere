@@ -197,12 +197,13 @@ def current_spend_project():
     return getattr(_spend, "project", None)
 
 
-def log_spend(service, what, usd, detail="", project=None, event_id=None):
+def log_spend(service, what, usd, detail="", project=None, event_id=None, **extra):
     try:
         store.save_doc("usage_events", {
             "id": event_id or store.new_id("use"), "created": store.now(), "ts": time.time(),
             "service": service, "what": what, "usd": usd, "detail": detail,
-            "project": project or getattr(_spend, "project", None)})
+            "project": project or getattr(_spend, "project", None),
+            **{k: v for k, v in extra.items() if v is not None}})
     except Exception as e:  # noqa: BLE001
         print("Couldn't log spending:", e)
 
@@ -897,13 +898,40 @@ def hf_submit(settings, endpoint, body):
     except requests.RequestException:
         raise UserError("Couldn't reach Higgsfield. Check your connection and try again.")
     data = _hf_check(r)
-    try:
-        usd = hf_estimate(settings, endpoint, body, timeout=10)
-    except UserError:
-        usd = None
+    usd, why = hf_price(settings, endpoint, body)
     return {"request_id": data["request_id"], "status_url": data.get("status_url") or
             f"{HF_BASE}/requests/{data['request_id']}/status", "status": data.get("status", "queued"),
-            "submitted": time.time(), "usd": usd, "endpoint": endpoint}
+            "submitted": time.time(), "usd": usd, "usd_error": why, "endpoint": endpoint,
+            "seconds": body.get("duration")}
+
+
+PRICE_KEYS = ("prompt", "image_url", "image_urls", "duration", "resolution", "aspect_ratio", "quality")
+
+
+def hf_price(settings, endpoint, body, timeout=10):
+    """(USD, None) for one request, or (None, why not). Higgsfield's price lookup refuses some requests it
+    happily generates (extra options, an audio reference), so simpler versions of the same request are tried."""
+    slim = {k: v for k, v in body.items() if k not in ("bitrate_mode", "audio_urls", "audio_url", "generate_audio")}
+    bare = {k: (v[:1] if k == "image_urls" else "A scene" if k == "prompt" else v)
+            for k, v in body.items() if k in PRICE_KEYS}
+    why = None
+    for attempt in (body, slim, bare):
+        try:
+            return hf_estimate(settings, endpoint, attempt, timeout=timeout), None
+        except UserError as e:
+            why = str(e)
+    return None, why
+
+
+def fallback_usd(settings, endpoint, seconds):
+    """A price from the per-second rate you typed in on the Dashboard, for clips Higgsfield gave no price for."""
+    try:
+        rate = float(settings.get("seedance_usd_per_second") or 0)
+    except (TypeError, ValueError):
+        rate = 0
+    if rate > 0 and seconds and "seedance" in (endpoint or ""):
+        return round(rate * float(seconds), 4)
+    return None
 
 
 def hf_poll(settings, job):
