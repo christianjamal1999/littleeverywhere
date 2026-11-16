@@ -946,6 +946,12 @@ def hf_poll(settings, job):
         url = ((data.get("images") or [{}])[0].get("url")
                or (data.get("video") or {}).get("url")
                or (data.get("audio") or {}).get("url"))
+        # If Higgsfield says what it charged, that beats any estimate. The reply's field names are kept
+        # with the charge so the exact price can be wired in once it's known where Higgsfield puts it.
+        charged = _find_usd({k: v for k, v in data.items() if k not in ("images", "video", "audio")})
+        if charged is not None:
+            job["charged_usd"] = charged
+        job["reply_fields"] = sorted(data)[:30]
         return status, url, None
     if status in ("failed", "nsfw", "canceled"):
         err = data.get("error") or {"nsfw": "Blocked by content moderation - adjust the prompt.",

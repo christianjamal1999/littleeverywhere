@@ -460,7 +460,10 @@ async function renderSpend() {
       <p class="error" id="spend-reprice-error" hidden></p></div>` : ""}
     <div class="card spend-card"><h2>Match your Higgsfield bill</h2>
       <p class="muted">Higgsfield doesn't tell this app what Seedance clips cost, so they're priced from a per-second rate${d.rate ? ` (now $${(+d.rate).toFixed(3)})` : ""}. Type the total your Higgsfield console says you've spent. Whatever the images and other models don't explain is spread over your Seedance clips by length, and that rate is used from then on. It also folds in anything Higgsfield charged that this app never saw, like clips that failed or spending before the Dashboard existed.</p>
-      <div class="row"><label style="margin:0">Higgsfield total spent, in dollars <input id="spend-billed" inputmode="decimal" placeholder="e.g. 836.71" style="width:120px"></label>
+      <div class="row"><label style="margin:0"><input type="file" id="spend-csv" accept=".csv,text/csv" hidden><span class="btn-like primary">Upload Higgsfield usage export (CSV)</span></label>
+        <span class="muted">Most exact: in the Higgsfield console open Analytics, choose Models and export. Do it again any time to true up.</span></div>
+      <div id="spend-import-result"></div>
+      <div class="row"><label style="margin:0">Or just the total spent, in dollars <input id="spend-billed" inputmode="decimal" placeholder="e.g. 836.71" style="width:120px"></label>
         <button id="spend-calibrate">Match it</button></div></div>
     <div class="card spend-card"><h2>Cost per video</h2>
       ${d.videos.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Video</th>${services.map(([n]) => `<th class="num">${esc(n)}</th>`).join("")}<th class="num">Total</th></tr></thead>
@@ -475,6 +478,16 @@ async function renderSpend() {
     <p class="hint">Calculated from each provider's published prices, so treat these as close estimates; your provider invoices are the final word. Spending before this Dashboard was added isn't included. ElevenLabs is priced at its $0.15 per minute API rate, which may differ if your plan includes credits.</p>`;
 }
 $("#spend-range").addEventListener("change", renderSpend);
+$("#spend").addEventListener("change", async (e) => {
+  if (e.target.id !== "spend-csv" || !e.target.files[0]) return;
+  const fd = new FormData(); fd.append("file", e.target.files[0]);
+  toast("Matching every charge to Higgsfield's numbers (about a minute)…");
+  let res;
+  try { res = await api("POST", "/api/spend/import", fd); } catch (err) { toast(err.message, true); return; }
+  await renderSpend();
+  $("#spend-import-result").innerHTML = `<p class="ok">Matched to Higgsfield for ${esc(res.period)}: $${res.total.toFixed(2)} in all.${res.rate ? ` Seedance works out to $${res.rate.toFixed(3)} per second of video.` : ""}</p>
+    <ul>${res.models.map((m) => `<li><b>${esc(m.model)}</b>: $${m.billed.toFixed(2)} for ${m.requests} requests${m.unrecorded ? `, ${m.unrecorded} of them never reached this app (failed, blocked or replaced before finishing)` : ""}</li>`).join("")}</ul>`;
+});
 $("#spend").addEventListener("click", async (e) => {
   if (e.target.id === "spend-calibrate") {
     const billed = $("#spend-billed").value.trim();

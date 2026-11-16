@@ -147,22 +147,53 @@ def save_upload(prefix):
     return store.put_file(f"{prefix}/{name}", f.read(), f.mimetype or "application/octet-stream")
 
 
+def log_job(s, job, what, project=None):
+    """Record what one finished Higgsfield job cost. Keyed by request, so it can't be counted twice.
+    The price is what Higgsfield said it charged if it said, else its quote, else your per-second rate."""
+    took = f", took {time.time() - job['submitted']:.0f} s" if job.get("submitted") else ""
+    how = f", {job['seconds']} s clip" if job.get("seconds") else ""
+    usd = job.get("charged_usd")
+    if usd is not None:
+        how += ", as charged by Higgsfield"
+    else:
+        usd = job.get("usd")
+    if usd is None:
+        usd = sv.fallback_usd(s, job.get("endpoint"), job.get("seconds"))
+        how += ", priced at your per-second rate" if usd is not None else ""
+    sv.log_spend("Higgsfield", what, usd, (job.get("endpoint") or "") + how + took, project,
+                 "use_" + job["request_id"], seconds=job.get("seconds"), endpoint=job.get("endpoint"),
+                 price_error=job.get("usd_error"), reply_fields=job.get("reply_fields"))
+
+
+def collect_orphans(s, p):
+    """Clips that were replaced while still generating: Higgsfield finishes and charges for them anyway,
+    so each is checked until it ends and its cost recorded. The clip itself isn't kept."""
+    left, changed = [], False
+    for job in p.get("orphan_jobs") or []:
+        try:
+            status, url, err = sv.hf_poll(s, job)
+        except sv.UserError:
+            left.append(job)
+            continue
+        if url:
+            log_job(s, job, f"{job.get('what') or 'Clip'} (replaced before it finished)", p["id"])
+        if url or err or time.time() - job.get("submitted", 0) > 6 * 3600:
+            changed = True
+        else:
+            left.append(job)
+    if changed:
+        keep = {j["request_id"] for j in left}
+        update_doc("projects", p["id"], lambda q: q.update(
+            orphan_jobs=[j for j in q.get("orphan_jobs") or [] if j["request_id"] in keep]))
+
+
 def collect_output(s, job, kind_prefix, what, project=None):
     """Advance one Higgsfield job. Returns (finished, url_or_None, error_or_None).
     Only successful jobs are charged, so that's when the spending is logged."""
     status, url, err = sv.hf_poll(s, job)
     job["status"] = status
     if url:
-        # Keyed by request, so two polls finishing the same job can't count it twice.
-        took = f", took {time.time() - job['submitted']:.0f} s" if job.get("submitted") else ""
-        length = f", {job['seconds']} s clip" if job.get("seconds") else ""
-        usd = job.get("usd")
-        if usd is None:
-            usd = sv.fallback_usd(s, job.get("endpoint"), job.get("seconds"))
-            length += ", priced at your per-second rate" if usd is not None else ""
-        sv.log_spend("Higgsfield", what, usd, (job.get("endpoint") or "") + length + took,
-                     project, "use_" + job["request_id"],
-                     seconds=job.get("seconds"), endpoint=job.get("endpoint"), price_error=job.get("usd_error"))
+        log_job(s, job, what, project)
         ext = os.path.splitext(url.split("?")[0])[1] or ".bin"
         ctype = {".mp4": "video/mp4", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
         return True, store.put_file(f"{kind_prefix}{ext}", store.fetch_bytes(url), ctype), None
@@ -758,6 +789,8 @@ def activity():
                 "5-minute limit). Try again.", task["kind"])))
         has_jobs = (p.get("thumb_job") or p.get("thumb_jobs") or any(loc.get("job") for loc in _locations(p))
                     or any(sc.get("jobs") for sc in (p.get("plan") or {}).get("scenes", [])))
+        if p.get("orphan_jobs") and can_poll:
+            collect_orphans(s, p)
         if has_jobs and can_poll and budget[0] > 0:
             try:
                 advance_project(s, p, budget)
@@ -868,6 +901,71 @@ def spend_calibrate():
                  detail=f"{base}, {secs} s clip, priced to match your Higgsfield bill (${rate:.3f} per second)")
         store.save_doc("usage_events", e)
     return jsonify(rate=rate, clips=len(clips), seconds=seconds, other=round(other, 2))
+
+
+def _event_model(e):
+    return e.get("endpoint") or e.get("detail", "").split(",")[0].strip()
+
+
+@app.post("/api/spend/import")
+def spend_import():
+    """True the Dashboard up against Higgsfield's own usage export (console > Analytics > Models, CSV).
+    Per model: Seedance clips are re-priced by length so they add up to what was billed, which also sets
+    the per-second rate for future clips; for every other model the difference between what was billed and
+    what this app recorded becomes one "not recorded" line. Importing again replaces the last import."""
+    import csv
+    import io
+    from datetime import datetime, timedelta, timezone
+    f = request.files.get("file")
+    if not f:
+        raise sv.UserError("Choose the CSV exported from your Higgsfield console.")
+    rows = list(csv.DictReader(io.StringIO(f.read().decode("utf-8-sig", "replace"))))
+    if not rows or not {"model_key", "spend_usd", "total_requests", "start_date", "end_date"} <= set(rows[0]):
+        raise sv.UserError("That isn't Higgsfield's model usage export. In the console, open Analytics, "
+                           "choose Models and export it as CSV.")
+
+    def day(text, plus=0):
+        return (datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=plus)).timestamp()
+
+    start, end = day(rows[0]["start_date"]), day(rows[0]["end_date"], 1)
+    events = [e for e in store.list_docs("usage_events") if e.get("service") == "Higgsfield"]
+    projects = {p["id"]: p for p in store.list_docs("projects")}
+    old_notes = {e["id"] for e in events if e.get("adjustment")}
+    summary, rate = [], None
+    for row in rows:
+        model, billed, requests_billed = row["model_key"], float(row["spend_usd"]), int(float(row["total_requests"]))
+        mine = [e for e in events if not e.get("adjustment") and _event_model(e) == model
+                and start <= e.get("ts", 0) < end]
+        note_id = "use_adj_" + "".join(ch if ch.isalnum() else "_" for ch in model)
+        if "seedance" in model and mine:
+            seconds = sum(_clip_seconds(e, projects) for e in mine)
+            rate = round(billed / seconds, 4)
+            for e in mine:
+                secs = _clip_seconds(e, projects)
+                base = e.get("detail", "").split(", priced")[0].split(f", {secs} s clip")[0]
+                e.update(usd=round(billed * secs / seconds, 4), seconds=secs, endpoint=model,
+                         detail=f"{base}, {secs} s clip, priced from your Higgsfield bill (${rate:.3f} per second)")
+                store.save_doc("usage_events", e)
+            diff = 0.0
+        else:
+            diff = round(billed - sum(e.get("usd") or 0 for e in mine), 2)
+        if abs(diff) >= 0.01:
+            store.save_doc("usage_events", {
+                "id": note_id, "created": store.now(), "ts": min(time.time(), end - 1), "service": "Higgsfield",
+                "what": "Charges this app didn't record", "usd": diff, "project": None, "adjustment": True,
+                "endpoint": model,
+                "detail": f"{row.get('display_name') or model}: Higgsfield billed {requests_billed} requests "
+                          f"for ${billed:.2f}; this app recorded {len(mine)}"})
+            old_notes.discard(note_id)
+        summary.append({"model": row.get("display_name") or model, "billed": billed, "requests": requests_billed,
+                        "recorded": len(mine), "unrecorded": max(0, requests_billed - len(mine))})
+    for note_id in old_notes:  # a model that now matches no longer needs its line
+        store.delete_doc("usage_events", note_id)
+    if rate:
+        plain, secrets, _ = saved_settings()
+        _save_settings({**plain, "seedance_usd_per_second": rate}, secrets)
+    return jsonify(models=summary, rate=rate, total=round(sum(r["billed"] for r in summary), 2),
+                   period=f"{rows[0]['start_date']} to {rows[0]['end_date']}")
 
 
 @app.post("/api/spend/reprice")
@@ -1217,6 +1315,10 @@ def _scene(p, n):
 def _set_scene_job(pid, n, kind, job):
     def apply(q):
         sc = _scene(q, n)
+        old = sc["jobs"].get(kind)
+        if old:  # still generating, and still billed: keep watching it so its cost is recorded
+            label = "Keyframe" if kind == "image" else "Animation"
+            q["orphan_jobs"] = (q.get("orphan_jobs") or []) + [{**old, "what": f"{label}, scene {n}"}]
         sc["jobs"][kind] = job
         sc["errors"].pop(kind, None)
     return update_doc("projects", pid, apply)

@@ -343,3 +343,4 @@ video.short { max-height: 420px; aspect-ratio: 9/16; border-radius: var(--radius
 .banner-box.no-guides .guide { display: none; }
 
 .spend-card.warn { border-color: rgba(210,140,40,.7); }
+.btn-like.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
