@@ -120,7 +120,9 @@ Write:
   the camera: when the words say twirl, spin or turn around, the move is swirling arms, a sway or a quick
   quarter-turn and back, so faces and lips stay readable. Use each child's mannerisms between
   moves. formation: who stands where in this shot. energy: low, medium or high.
-Nobody crosses in front of anyone else, nobody leaves their spot, no lifts, no floor work, nothing unsafe."""
+Nobody crosses in front of anyone else, nobody leaves their spot, no lifts, no floor work, nothing unsafe.
+Video models refuse shots of children over innocent words, so never use kiss, hug, cuddle, skirt, hips,
+bottom or tongue in a move's name, steps or counts: a "Heart Kiss" is a "Heart Hands", a hug is a high five."""
     out = sv.claude_json(settings, CHOREOGRAPHER, prompt, CHOREO_SCHEMA, "Choreography")
     by_n = {s["n"]: s for s in out.pop("scenes")}
     for sc in plan["scenes"]:
@@ -260,6 +262,9 @@ free to dance. Something the words mention (an apple, a ball, an instrument) sit
 own insert shot with no people. Ignore any object a character's notes say they hold, carry or play.
 Nobody turns their back to the camera in any shot, even when the words say twirl or spin: show it with
 swirling arms or a sway.
+Video models refuse shots of children over innocent details, so: the camera is at the children's eye level or
+slightly above, never a low angle looking up at them; no kissing, hugging or cuddling (a wave or high five
+does the job); never mention skirts moving, hips, bottoms or tongues.
 An insert of animals or objects must never look like the children changed into them: don't follow a shot of
 two kids with two animals posed the same way, give the animals a different number, framing and place, and
 show them doing the song's action (hopping, wiggling, flapping). No kissing, nuzzling or cuddling animals.

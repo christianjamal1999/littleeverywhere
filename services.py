@@ -965,7 +965,28 @@ def low_balance(error):
 
 
 def content_blocked(error):
-    return bool(error) and any(x in str(error).lower() for x in ("copyright", "moderation", "blocked", "nsfw", "policy"))
+    return bool(error) and any(x in str(error).lower() for x in (
+        "copyright", "moderation", "blocked", "nsfw", "policy", "safety", "restrict", "sensitive", "violat"))
+
+
+# Words that are innocent in a kids' dance video but trip video models' safety filters when children are in
+# the shot. Each is swapped for a plain equivalent before a prompt is sent.
+FILTER_SWAPS = [
+    (r"\b(blow(?:s|ing)?\s+(?:a\s+)?)?kiss(?:es|ed|ing)?\b", "wave"), (r"\bsmooch\w*\b", "wave"),
+    (r"\b(?:tight\s+)?(?:bear\s+)?hug(?:s|ged|ging)?\b", "high five"), (r"\bcuddl\w*\b", "smile at each other"),
+    (r"\bskirt\s+(?:twirl\w*|fl(?:y|ies|ying|are\w*)|swish\w*|spin\w*|lift\w*)\b", "arms swirling"),
+    (r"\b(?:lift|hold|grab|swish)(?:s|es|ing)?\s+(?:her|the|their)\s+skirt\b", "swirls her arms"),
+    (r"\b(?:slightly\s+)?low[- ]angle\b", "eye-level"), (r"\blooking\s+(?:gently\s+)?up\s+(?:at|toward)\b", "level with"),
+    (r"\bfrom\s+below\b", "at eye level"), (r"\bshak\w+\s+(?:her|his|their)\s+(?:hips|bottom|booty)\b", "sways side to side"),
+    (r"\b(?:bottom|booty|thighs?)\b", "body"), (r"\b(?:bare|naked|undress\w*)\b", "covered"),
+    (r"\b(?:sexy|sassy|flirty|seductive)\b", "cheerful"), (r"\bfull bod(?:y|ies)\b", "whole figure"),
+]
+
+
+def filter_safe(text):
+    for pattern, plain in FILTER_SWAPS:
+        text = re.sub(pattern, plain, text or "", flags=re.I)
+    return text
 
 
 def image_job(settings, prompt, ref_urls, aspect_ratio, best=False):
@@ -1282,7 +1303,15 @@ def video_mode(settings):
     return mode if mode in VIDEO_MODES else "seedance_ref"  # the old "lipsync" mix is retired
 
 
-def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
+def video_prompt(scene, cast, everyone=(), bpm=None, note="", plain=False):
+    """plain: the simplest possible direction, for a shot the model's safety filter refused as written."""
+    if plain:
+        who = " and ".join(c["name"] for c in cast)
+        return (f"Animate exactly what is in this image, staying in this same shot with no cuts. {head_count(cast)} "
+                + (f"{who} {'dances' if len(cast) == 1 else 'dance'} happily on the spot with small bounces, "
+                   "claps and arm waves, smiling at the camera. " if cast else "Gentle, cheerful movement. ")
+                + f"{_sung_direction(scene, cast)} Slow, steady camera at the children's eye level. "
+                "Bright, wholesome, family-friendly children's music video. No text or subtitles.")
     habits = " ".join(f"{c['name']} {c['mannerisms']}." for c in cast if c.get("mannerisms"))
     hair = " ".join(f"{c['name']}'s hair stays exactly like this in every frame: {hair_of(c)}"
                     for c in cast if hair_of(c))
@@ -1290,8 +1319,10 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
     hair += " " + " ".join(f"{c['name']} keeps wearing {c['icon'].rstrip('. ')} for the whole shot."
                            for c in cast if c.get("icon"))
     tempo = f"Everyone moves on the beat of a {bpm} BPM song. " if bpm else ""
-    motion = (f"{KEEP_IDENTITY} {head_count(cast)} {hair} {LIVELY} {tempo}{_shot_motion(scene, cast, everyone)} "
-              f"{habits} {_sung_direction(scene, cast)} {FACE_CAMERA if cast else ''} Smooth, steady camera; "
+    # The direction is cleaned of filter-tripping words; the sung words are left exactly as they are.
+    motion = (f"{KEEP_IDENTITY} {head_count(cast)} {hair} {LIVELY} {tempo}"
+              f"{filter_safe(_shot_motion(scene, cast, everyone))} "
+              f"{filter_safe(habits)} {_sung_direction(scene, cast)} {FACE_CAMERA if cast else ''} Smooth, steady camera; "
               "every face sharp and in focus. "
               "No text or subtitles.")
     if len(cast) >= 3:
@@ -1299,14 +1330,14 @@ def video_prompt(scene, cast, everyone=(), bpm=None, note=""):
         motion += (" Everyone dances on their own spot and stays in the same left-to-right order: "
                    "nobody walks, rolls or crosses in front of anyone else.")
     if note:
-        motion += f" Fix from the last attempt: {note}"
+        motion += f" Fix from the last attempt: {filter_safe(note)}"
     return motion
 
 
-def video_job(settings, scene, cast, audio_url=None, bpm=None, everyone=(), note=""):
+def video_job(settings, scene, cast, audio_url=None, bpm=None, everyone=(), note="", plain=False):
     dur = max(1.0, scene["end"] - scene["start"])
     mode = video_mode(settings)
-    motion = video_prompt(scene, cast, everyone, bpm, note)
+    motion = video_prompt(scene, cast, everyone, bpm, note, plain)
     resolution = settings.get("video_resolution") or "1080p"
     if mode == "kling_i2v":
         return hf_submit(settings, settings["kling_endpoint"], {

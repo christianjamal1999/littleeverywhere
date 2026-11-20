@@ -1339,8 +1339,11 @@ def scene_image(pid, n):
     return jsonify(submit_image(settings(), pid, load_or_404("projects", pid), n))
 
 
-def submit_video(s, pid, p, n, with_song=True):
-    """with_song=False animates without the song slice: no lip-sync, for a shot a model's filter refuses."""
+def submit_video(s, pid, p, n, with_song=True, plain=False, model=None):
+    """For a shot a model's safety filter refuses: plain=True sends the simplest possible direction;
+    model="kling_i2v" animates it with the other video model (no song, so no lip-sync)."""
+    if model:
+        s, with_song = {**s, "video_mode": model}, False
     sc = _scene(p, n)
     if sc.get("reuse"):
         raise sv.UserError(f"Scene {n} reuses scene {sc['reuse']}'s shot. Re-animate that one instead.")
@@ -1355,17 +1358,22 @@ def submit_video(s, pid, p, n, with_song=True):
         os.remove(clip)
     review = sc.get("review") or {}
     note = review.get("note", "") if review.get("status") == "declined" else ""
-    job = sv.video_job(s, sc, _scene_cast(p, sc), audio, p["plan"].get("bpm"), _cast_of(p), note)
+    job = sv.video_job(s, sc, _scene_cast(p, sc), audio, p["plan"].get("bpm"), _cast_of(p), note, plain)
     return _set_scene_job(pid, n, "video", job)
 
 
-@app.post("/api/projects/<pid>/scenes/<int:n>/redo")
-def scene_redo(pid, n):
-    """Swap one scene for a different take: Claude re-directs the shot from your note, the old picture, clip
-    and approval are dropped, and the new keyframe starts painting. Body: {note}. A chorus repeat sends
-    the redo to the shot it repeats, since they share one clip."""
-    s = settings()
-    note = str(body().get("note", "")).strip()[:500]
+SAFETY_NOTE = ("A video model's safety filter refused to animate this shot of children, three times. Rewrite it so "
+               "nothing could be misread: camera at the children's eye level (never low or looking up), framed from "
+               "the chest up or as a simple wide group shot, simple movements only (clap, wave, bounce, sway, point, "
+               "arms up), everyone a little apart and not touching. Do not use the words kiss, hug, cuddle, skirt, "
+               "hips, twirl, spin, wiggle or tongue anywhere, and rename any dance move that contains them.")
+
+
+def redo_scene(s, pid, n, note, rescue=False):
+    """Swap one scene for a different take: Claude re-directs the shot from the note, the old picture, clip
+    and approval are dropped, and the new keyframe starts painting. A chorus repeat sends the redo to the
+    shot it repeats, since they share one clip. rescue=True is the automatic rewrite after safety-filter
+    refusals: it remembers that it happened, so the scene isn't rewritten over and over."""
     p = load_or_404("projects", pid)
     sc = _scene(p, n)
     if sc.get("reuse"):
@@ -1384,7 +1392,10 @@ def scene_redo(pid, n):
             if target["n"] == n:
                 target["direction"], target["cast"] = new, cast_ids
                 target["singers"] = cast_ids if target.get("sung") else []
-                target["redo_note"] = note
+                target["redo_note"] = "" if rescue else note
+                if rescue:  # the old dance counts are what the filter refused, so the new shot leads
+                    target.pop("choreo", None)
+                    target["safety_redo"] = target.get("safety_redo", 0) + 1
                 stale.extend([target.pop("image", None), target.pop("video", None)])
             if target["n"] == n or target.get("reuse") == n:
                 stale.append((target.pop("preview", None) or {}).get("url"))
@@ -1398,7 +1409,13 @@ def scene_redo(pid, n):
                          "status": f"Redoing scene {n}…"}
     update_doc("projects", pid, apply)
     store.delete_media(stale)
-    return jsonify(submit_image(s, pid, load_or_404("projects", pid), n))
+    return submit_image(s, pid, load_or_404("projects", pid), n)
+
+
+@app.post("/api/projects/<pid>/scenes/<int:n>/redo")
+def scene_redo(pid, n):
+    """Body: {note}."""
+    return jsonify(redo_scene(settings(), pid, n, str(body().get("note", "")).strip()[:500]))
 
 
 @app.post("/api/projects/<pid>/scenes/<int:n>/video")

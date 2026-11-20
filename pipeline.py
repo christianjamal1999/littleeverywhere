@@ -154,6 +154,21 @@ class Wait(Exception):
     """Nothing to do right now (jobs running, or it's the person's turn)."""
 
 
+MAX_REWRITES = 2  # automatic rewrites of one shot after safety-filter refusals
+
+
+def _blocked_plan(sc):
+    """What to try next for a clip the video model's safety filter refused, by how many refusals since the
+    shot was last rewritten: first the plainest possible direction; then Claude rewrites the whole shot and
+    it starts over (twice at most); only then the other video model, which can't lip-sync; then stop."""
+    tries, rewrites = (sc.get("tries") or {}).get("video", 0), sc.get("safety_redo", 0)
+    if tries <= 1:
+        return "plain"
+    if rewrites < MAX_REWRITES:
+        return "rewrite"
+    return "other model" if tries == 2 else "stop"
+
+
 def _cast_step(s, p):
     cast = studio.cast_for(p["brief"].get("cast", []))
     look = sv.look_of(s)
@@ -218,7 +233,20 @@ def next_step(s, p):
             if sv.low_balance(err):
                 raise Stop("Your Higgsfield balance ran out. Add funds at console.higgsfield.ai, then press "
                            "Do everything again; it picks up where it stopped.")
-            if (sc.get("tries") or {}).get(kind, 0) >= MAX_TRIES:
+            tries = (sc.get("tries") or {}).get(kind, 0)
+            if kind == "video" and sv.content_blocked(err):
+                # A safety-filter refusal has its own ladder (see _blocked_plan): it only stops at the end of it.
+                plan_b = _blocked_plan(sc)
+                if plan_b == "rewrite" and not (sc.get("jobs") or {}):
+                    return ("rescue", f"Scene {sc['n']} was refused by the video model's safety filter, so "
+                            "rewriting the shot and repainting it",
+                            lambda n=sc["n"]: studio.redo_scene(s, pid, n, studio.SAFETY_NOTE, rescue=True))
+                if plan_b == "stop":
+                    raise Stop(f"Scene {sc['n']} was refused by the safety filter even after being rewritten "
+                               "twice and tried on the other video model. Press Redo scene and describe a "
+                               "simpler shot, or upload a different keyframe.")
+                continue
+            if tries >= MAX_TRIES:
                 raise Stop(f"Scene {sc['n']}'s {what} failed {MAX_TRIES} times: {err}")
 
     room = WAVE - running
@@ -242,12 +270,12 @@ def next_step(s, p):
             sv.test_higgsfield(s)  # stops here, with a clear message, when the balance is at zero
             for sc in batch:
                 err = (sc.get("errors") or {}).get("video")
-                # A shot the model's filter refused twice is tried once more without the song slice.
-                with_song = not (sv.content_blocked(err) and (sc.get("tries") or {}).get("video", 0) >= 2)
+                plan_b = _blocked_plan(sc) if sv.content_blocked(err) else "normal"
                 if (sc.get("review") or {}).get("status") == "declined":
                     studio.update_doc("projects", pid, lambda q, n=sc["n"]: studio._scene(q, n).update(
                         remakes=studio._scene(q, n).get("remakes", 0) + 1))
-                studio.submit_video(s, pid, p, sc["n"], with_song)
+                studio.submit_video(s, pid, p, sc["n"], plain=plan_b == "plain",
+                                    model="kling_i2v" if plan_b == "other model" else None)
         return "animation", f"Animating with the song ({done}/{len(own)} done)", animate
     if running:
         raise Wait(f"Generating on Higgsfield ({running} running)…")
@@ -449,6 +477,11 @@ def project_auto(pid):
             q["auto"] = {"on": True, "status": "Starting…", "started": time.time(),
                          "recomposed": (q.get("auto") or {}).get("recomposed", 0)}
             for sc in _scenes(q):  # a fresh start retries what failed before
+                if sv.content_blocked((sc.get("errors") or {}).get("video")):
+                    # ...except a safety-filter refusal: retrying it as written fails again, so it goes
+                    # straight to a rewrite, with a fresh allowance of rewrites.
+                    sc["tries"], sc["safety_redo"] = {"video": 3}, 0
+                    continue
                 sc["errors"] = {}
                 sc.pop("tries", None)
                 if (sc.get("review") or {}).get("stuck"):
